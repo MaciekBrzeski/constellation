@@ -121,14 +121,30 @@ DRM and conflicts with the kmsdrm kiosk path.
        --rootfs /run/media/$USER/rootfs \
        --boot   /run/media/$USER/bootfs \
        --ssid   'MyNetwork' \
-       --psk    'mypassword'
+       --psk    'mypassword' \
+       --ssh-pubkey ~/.ssh/id_ed25519.pub   # optional, for passwordless SSH
    ```
 
    It drops the bundle into `/home/pi/constellation/`, installs both
    systemd units, writes a NetworkManager profile (mode 600) with
    hardcoded DNS (1.1.1.1, 8.8.8.8), masks `userconfig.service` so the
    first-boot wizard doesn't hang headless boot, enables persistent
-   journals, and adds `pi` to the `audio,video,render,input,tty` groups.
+   journals, enables `sshd` (with optional pubkey-based auth via
+   `--ssh-pubkey`), and adds `pi` to the `audio,video,render,input,tty`
+   groups.
+
+### Connecting from another device (laptop, Android Termux, …)
+
+After first boot, find the Pi's IP from your router or run `hostname -I`
+on the Pi. Then:
+
+```
+ssh pi@<pi-ip>
+```
+
+If you provisioned without `--ssh-pubkey`, set a password on the Pi
+once with `sudo passwd pi` before SSH will accept you. From Android,
+`pkg install openssh` in Termux gives you the same `ssh` client.
 
 4. Unmount + eject. Insert into the Pi, power on.
 

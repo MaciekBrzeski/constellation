@@ -18,6 +18,7 @@
 #       --boot   /run/media/wruszbit/bootfs \
 #       --ssid   'MyNetwork' \
 #       --psk    'mypassword' \
+#       [--ssh-pubkey ~/.ssh/id_ed25519.pub] \
 #       [--bundle dist/constellation-pi.tar.gz] \
 #       [--user pi]
 
@@ -33,14 +34,16 @@ SSID=""
 PSK=""
 BUNDLE="dist/constellation-pi.tar.gz"
 PI_USER="pi"
+SSH_PUBKEY=""
 while [[ $# -gt 0 ]]; do
     case $1 in
-        --rootfs) ROOTFS=$2; shift 2 ;;
-        --boot)   BOOT=$2;   shift 2 ;;
-        --ssid)   SSID=$2;   shift 2 ;;
-        --psk)    PSK=$2;    shift 2 ;;
-        --bundle) BUNDLE=$2; shift 2 ;;
-        --user)   PI_USER=$2; shift 2 ;;
+        --rootfs)      ROOTFS=$2;     shift 2 ;;
+        --boot)        BOOT=$2;       shift 2 ;;
+        --ssid)        SSID=$2;       shift 2 ;;
+        --psk)         PSK=$2;        shift 2 ;;
+        --bundle)      BUNDLE=$2;     shift 2 ;;
+        --user)        PI_USER=$2;    shift 2 ;;
+        --ssh-pubkey)  SSH_PUBKEY=$2; shift 2 ;;
         *) die "unknown arg: $1" ;;
     esac
 done
@@ -50,6 +53,7 @@ done
 [[ -n $BOOT   && -d $BOOT   ]] || die "--boot path missing or not a directory"
 [[ -n $SSID && -n $PSK ]] || die "need --ssid and --psk"
 [[ -f $BUNDLE ]] || die "bundle not found at $BUNDLE — run scripts/build_pi_bundle.sh first"
+[[ -z $SSH_PUBKEY || -f $SSH_PUBKEY ]] || die "--ssh-pubkey path not a file: $SSH_PUBKEY"
 
 # ----- sanity-check the rootfs
 [[ -f "$ROOTFS/etc/os-release" ]] || die "$ROOTFS doesn't look like a Linux rootfs"
@@ -138,6 +142,28 @@ EOF
 chmod 600 "$NM_FILE"
 chown 0:0 "$NM_FILE"
 
+# ----- enable SSH (Pi OS firstboot trigger + systemd wants symlink belt-and-braces)
+log "enabling sshd"
+touch "$BOOT/ssh"
+# Pre-create the wants symlink in case the firstboot trigger doesn't fire
+# (e.g. if the bootfs partition isn't mounted at /boot/firmware). ssh.service
+# ships in openssh-server which is preinstalled on Pi OS Lite.
+ln -sfn /lib/systemd/system/ssh.service \
+    "$WANTS/ssh.service"
+
+# Drop authorized_keys if a pubkey was provided.
+if [[ -n $SSH_PUBKEY ]]; then
+    log "installing pubkey for $PI_USER from $SSH_PUBKEY"
+    SSH_DIR="$ROOTFS$PI_HOME/.ssh"
+    mkdir -p "$SSH_DIR"
+    cat "$SSH_PUBKEY" >> "$SSH_DIR/authorized_keys"
+    chmod 700 "$SSH_DIR"
+    chmod 600 "$SSH_DIR/authorized_keys"
+    chown -R "$PI_UID:$PI_GID" "$SSH_DIR"
+else
+    log "no --ssh-pubkey given; you'll need to set a password on the Pi (sudo passwd $PI_USER)"
+fi
+
 # ----- enable persistent journal so we can debug across reboots
 log "enabling persistent systemd journal"
 mkdir -p "$ROOTFS/var/log/journal"
@@ -166,6 +192,11 @@ echo "  units:       constellation.service + constellation-bootstrap.service"
 echo "  wifi:        $NM_FILE (mode 600)"
 echo "  user:        $PI_USER added to audio,video,render,input,tty"
 echo "  wizard:      userconfig.service masked"
+if [[ -n $SSH_PUBKEY ]]; then
+    echo "  ssh:         enabled, pubkey installed for $PI_USER"
+else
+    echo "  ssh:         enabled (no pubkey — set password on Pi: sudo passwd $PI_USER)"
+fi
 echo
 echo "Next: unmount and eject the card, then insert into the Pi Zero 2 W."
 echo "  udisksctl unmount -b /dev/sdb1"
