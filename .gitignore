@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+*.egg
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Virtualenv
+.venv/
+venv/
+
+# Build artefacts
+dist/
+build/
+
+# Scratch / diagnostic captures
+tmp/
+
+# Editor / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# Local Claude state (keep CLAUDE.md tracked)
+.claude/settings.local.json

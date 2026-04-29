@@ -1,0 +1,46 @@
+mode = "windowed"
+assets_dir = "assets"
+
+[display]
+width = 1920
+height = 1080
+fps = 60
+title = "Constellation"
+bg_color = [0, 0, 0]
+
+[animation]
+target_fps = 12
+idle_fps = 4
+default_action = "idle"
+animals = ["deer_male", "deer_female", "sample"]
+action_rotate_min_sec = 8.0
+action_rotate_max_sec = 20.0
+tempo_rotate_factor = 1.0
+strong_beat_threshold = 4.0
+strong_hold_sec = 2.5
+
+[render]
+bg_star_count = 80
+twinkle_probability = 0.08
+twinkle_min_alpha = 0.3
+star_color = [255, 255, 255]
+line_color = [180, 200, 255]
+line_alpha = 0.25
+star_radius_min = 1
+star_radius_max = 5
+line_max_width = 1
+
+[preprocess]
+frame_width = 32
+frame_height = 32
+binarize_threshold = 128
+min_contour_area = 80
+corner_angle_threshold = 120.0
+corner_neighbor_distance = 3
+contour_max_edge = 2.0
+epsilon_pct = 0.004
+
+[audio]
+sensitivity = 1.5
+cooldown_ms = 200.0
+silence_timeout_sec = 5.0

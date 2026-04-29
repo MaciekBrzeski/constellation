@@ -1,0 +1,16 @@
+[Unit]
+Description=Constellation kiosk first-boot bootstrap
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=!/var/lib/constellation/bootstrap-done
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/constellation-bootstrap.sh
+RemainAfterExit=no
+StandardOutput=journal+console
+StandardError=journal+console
+TimeoutStartSec=600
+
+[Install]
+WantedBy=multi-user.target

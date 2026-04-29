@@ -1,0 +1,23 @@
+[Unit]
+Description=Constellation display (projector kiosk)
+After=multi-user.target network-online.target sound.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+Group=pi
+SupplementaryGroups=audio video render input tty
+WorkingDirectory=/home/pi/constellation
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+# Pi OS Lite has no X — use the DRM/KMS framebuffer directly.
+Environment=SDL_VIDEODRIVER=kmsdrm
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/usr/bin/python3 -m constellation --config config/default.toml --animal deer_male --mode fullscreen --audio
+Restart=on-failure
+RestartSec=3
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
