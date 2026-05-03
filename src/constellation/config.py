@@ -78,6 +78,7 @@ class AudioConfig:
     high_intensity_ratio: float = 6.0
     tempo_history_size: int = 8
     min_noise_floor: float = 0.002
+    use_aubio: bool = True
 
 
 @dataclass(frozen=True)

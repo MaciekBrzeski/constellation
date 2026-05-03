@@ -1,4 +1,10 @@
-"""Beat detection via microphone input using energy-based onset detection."""
+"""Beat detection via microphone input.
+
+Hybrid backend: prefers ``aubio.tempo`` (phase-locked autocorrelation tempo
+tracker) for onset firing when the library is available, falling back to
+RMS-spike detection. Energy-tier classification is always RMS-based since
+aubio doesn't expose comparable loudness metrics.
+"""
 
 from __future__ import annotations
 
@@ -10,19 +16,23 @@ import numpy as np
 
 
 class BeatDetector:
-    """Detect musical beats from microphone audio using RMS energy spikes.
+    """Detect musical beats from microphone audio.
 
-    Onset: beats fire when the current block's RMS exceeds
-    ``rolling_mean * sensitivity`` and the audio-time cooldown has elapsed.
+    Onset (preferred): ``aubio.tempo`` reports beats per block — phase-locked
+    so subsequent beats land on-beat instead of after the kick. Falls back
+    to RMS-spike detection when aubio isn't installed.
+
+    RMS fallback: beats fire when block RMS exceeds
+    ``rolling_mean * sensitivity`` past the audio-time cooldown.
 
     Energy tiering: classifies overall loudness against an **adaptive noise
     floor** (rolling 10th-percentile of recent RMS). ``low`` = near silence,
     ``medium`` = quiet music, ``high`` = loud music. Drives action selection
     in :class:`constellation.animation.behavior.AudioReactiveBehavior`.
 
-    BPM: estimated from inter-beat intervals measured in **audio time**
-    (derived from the block count and sample rate), not wall clock — so the
-    detector is reproducible offline and robust to thread starvation live.
+    BPM: aubio's autocorrelation estimate when active, otherwise interval-
+    based on **audio time** (block count × sample rate) so it stays accurate
+    offline and under thread starvation.
     """
 
     def __init__(
@@ -38,6 +48,7 @@ class BeatDetector:
         high_intensity_ratio: float = 6.0,
         tempo_history_size: int = 8,
         min_noise_floor: float = 0.002,
+        use_aubio: bool = True,
     ) -> None:
         self.sensitivity = sensitivity
         self.cooldown_ms = cooldown_ms
@@ -83,6 +94,11 @@ class BeatDetector:
 
         self._bpm: float = 0.0
         self._stream = None
+
+        # aubio tempo tracker — populated lazily in start() so unit tests and
+        # offline replay can construct the detector without the lib.
+        self._use_aubio: bool = use_aubio
+        self._aubio_tempo = None
 
     # ------------------------------------------------------------- properties
     @property
@@ -144,11 +160,41 @@ class BeatDetector:
     # ------------------------------------------------------------- processing
     def _audio_callback(self, indata: np.ndarray, frames: int, time_info, status) -> None:
         """Called by sounddevice for each audio block."""
-        rms = float(np.sqrt(np.mean(indata[:, 0] ** 2)))
-        self._process_energy(rms)
+        block = indata[:, 0].astype(np.float32)
+        rms = float(np.sqrt(np.mean(block ** 2)))
 
-    def _process_energy(self, rms: float) -> None:
-        """Core onset + tier logic — testable without hardware."""
+        # Phase-locked tempo tracking. aubio.tempo expects exactly hop_size
+        # samples; sounddevice's blocksize is set to match in start(). When
+        # aubio reports a beat the RMS gate is bypassed — aubio has its own
+        # silence handling and is more reliable on sustained music.
+        aubio_beat = False
+        aubio_bpm = 0.0
+        if self._aubio_tempo is not None:
+            try:
+                is_beat = self._aubio_tempo(block)
+                aubio_beat = bool(is_beat[0])
+                if aubio_beat:
+                    aubio_bpm = float(self._aubio_tempo.get_bpm())
+            except Exception:
+                # aubio internal error → drop to RMS path for this block.
+                aubio_beat = False
+                aubio_bpm = 0.0
+
+        self._process_energy(rms, aubio_beat=aubio_beat, aubio_bpm=aubio_bpm)
+
+    def _process_energy(
+        self,
+        rms: float,
+        aubio_beat: bool = False,
+        aubio_bpm: float = 0.0,
+    ) -> None:
+        """Core onset + tier logic — testable without hardware.
+
+        ``aubio_beat=True`` forces a beat fire (bypassing the RMS gate);
+        used when the aubio path detected an onset. ``aubio_bpm`` is the
+        autocorrelation BPM at fire time and overrides the interval-based
+        estimate when supplied.
+        """
         # Advance audio time by one block.
         self._audio_time_ms += self._block_duration_ms
 
@@ -187,44 +233,62 @@ class BeatDetector:
         else:
             self._energy_tier = "medium"
 
-        # Onset check — require RMS above the hard noise gate as a sanity
-        # filter, then exceed the rolling mean × sensitivity.
+        cooldown_elapsed = (
+            self._audio_time_ms - self._last_beat_audio_ms
+        ) >= self.cooldown_ms
+
+        if aubio_beat and cooldown_elapsed:
+            self._fire_beat(rms, ext_bpm=aubio_bpm)
+            return
+
+        # RMS fallback path — only runs when aubio either didn't fire or is
+        # unavailable. Same gates as before: above the hard noise floor, then
+        # above rolling_mean × sensitivity.
         if rms < self.noise_gate:
             return
 
         rolling_mean = sum(self._energy_history) / len(self._energy_history)
         threshold = rolling_mean * self.sensitivity
 
-        cooldown_elapsed = (
-            self._audio_time_ms - self._last_beat_audio_ms
-        ) >= self.cooldown_ms
-
         if rms > threshold and cooldown_elapsed:
-            self._last_beat_audio_ms = self._audio_time_ms
-            self._last_beat_wall_s = time.monotonic()
-            # Strength measured against the adaptive noise floor rather than
-            # the short rolling mean — during sustained music the rolling
-            # mean tracks the beats themselves, collapsing every hit to ~1.5×.
-            # noise_floor (p10 of the 9 s window) stays near the song's quiet
-            # passages, giving a useful spread: hats ~2×, snares ~4×, kicks ~7×.
-            self._last_beat_strength = (
-                rms / self._noise_floor if self._noise_floor > 0 else 0.0
-            )
-            self._beat_event.set()
+            self._fire_beat(rms)
 
-            self._beat_audio_times_ms.append(self._audio_time_ms)
-            if len(self._beat_audio_times_ms) >= 2:
-                intervals = [
-                    self._beat_audio_times_ms[i + 1] - self._beat_audio_times_ms[i]
-                    for i in range(len(self._beat_audio_times_ms) - 1)
-                ]
-                mean_interval_ms = sum(intervals) / len(intervals)
-                if mean_interval_ms > 0:
-                    self._bpm = 60000.0 / mean_interval_ms
+    def _fire_beat(self, rms: float, ext_bpm: float = 0.0) -> None:
+        """Record a beat at the current audio time and emit the event."""
+        self._last_beat_audio_ms = self._audio_time_ms
+        self._last_beat_wall_s = time.monotonic()
+        # Strength measured against the adaptive noise floor rather than
+        # the short rolling mean — during sustained music the rolling mean
+        # tracks the beats themselves, collapsing every hit to ~1.5×.
+        # noise_floor (p10 of the 9 s window) stays near the song's quiet
+        # passages, giving a useful spread: hats ~2×, snares ~4×, kicks ~7×.
+        self._last_beat_strength = (
+            rms / self._noise_floor if self._noise_floor > 0 else 0.0
+        )
+        self._beat_event.set()
+
+        self._beat_audio_times_ms.append(self._audio_time_ms)
+        # Prefer aubio's autocorrelation BPM when supplied (smoother and
+        # phase-locked). Fall back to interval-based estimate.
+        if ext_bpm > 0:
+            self._bpm = ext_bpm
+        elif len(self._beat_audio_times_ms) >= 2:
+            intervals = [
+                self._beat_audio_times_ms[i + 1] - self._beat_audio_times_ms[i]
+                for i in range(len(self._beat_audio_times_ms) - 1)
+            ]
+            mean_interval_ms = sum(intervals) / len(intervals)
+            if mean_interval_ms > 0:
+                self._bpm = 60000.0 / mean_interval_ms
 
     # ------------------------------------------------------------- lifecycle
     def start(self) -> None:
-        """Open the microphone stream and begin listening for beats."""
+        """Open the microphone stream and begin listening for beats.
+
+        If aubio is installed and ``use_aubio`` is set, also instantiate
+        ``aubio.tempo`` for phase-locked beat tracking. Falls back silently
+        to the RMS path when aubio isn't available.
+        """
         try:
             import sounddevice as sd
         except ImportError as exc:
@@ -232,6 +296,22 @@ class BeatDetector:
                 "sounddevice is required for audio beat detection. "
                 "Install it with: pip install 'constellation[audio]'"
             ) from exc
+
+        if self._use_aubio:
+            try:
+                import aubio  # type: ignore[import-not-found]
+
+                # win_s = 2 × hop_s is the standard aubio.tempo config; gives
+                # the tracker enough buffer to estimate phase.
+                self._aubio_tempo = aubio.tempo(
+                    "default",
+                    self.block_size * 2,
+                    self.block_size,
+                    self.sample_rate,
+                )
+            except ImportError:
+                # aubio missing → RMS fallback. Don't error.
+                self._aubio_tempo = None
 
         try:
             self._stream = sd.InputStream(
@@ -254,3 +334,9 @@ class BeatDetector:
             self._stream.stop()
             self._stream.close()
             self._stream = None
+        self._aubio_tempo = None
+
+    @property
+    def aubio_active(self) -> bool:
+        """True when the aubio tempo tracker is in use for this run."""
+        return self._aubio_tempo is not None

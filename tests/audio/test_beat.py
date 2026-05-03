@@ -125,3 +125,23 @@ def test_cooldown_enforced_on_audio_clock() -> None:
     det.beat_event.clear()
     det._process_energy(1.0)
     assert not det.beat_event.is_set()
+
+
+def test_aubio_beat_override_fires_under_noise_gate() -> None:
+    """aubio_beat=True should fire even when RMS is below the gate."""
+    det = _det(noise_gate=0.5)  # gate set so RMS path can't fire
+    for _ in range(10):
+        det._process_energy(0.02)
+    det._process_energy(0.02, aubio_beat=True, aubio_bpm=128.0)
+    assert det.beat_event.is_set()
+    assert det.bpm == 128.0
+
+
+def test_aubio_bpm_overrides_interval_estimate() -> None:
+    """Supplied aubio BPM wins over the interval-derived estimate."""
+    det = _det()
+    for _ in range(10):
+        det._process_energy(0.02)
+    det._process_energy(0.5, aubio_beat=True, aubio_bpm=140.0)
+    det._process_energy(0.5, aubio_beat=True, aubio_bpm=141.0)
+    assert det.bpm == 141.0

@@ -100,8 +100,13 @@ def main(argv: list[str] | None = None) -> None:
             high_intensity_ratio=audio_cfg.high_intensity_ratio,
             tempo_history_size=audio_cfg.tempo_history_size,
             min_noise_floor=audio_cfg.min_noise_floor,
+            use_aubio=audio_cfg.use_aubio,
         )
         beat_detector.start()
+        if beat_detector.aubio_active:
+            print("[audio] aubio tempo tracker active (phase-locked)")
+        else:
+            print("[audio] aubio unavailable, using RMS onset detection")
 
     assets_dir = Path(args.assets) if args.assets else Path(config.assets_dir)
     controller = AnimationController(config.animation, assets_dir)

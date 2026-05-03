@@ -39,10 +39,17 @@ constellation-run --config my.toml --sensitivity 1.4
 Pygame loop:
 - `AnimationController` cycles animals/actions, fetches per-frame vertex
   data, supports linear tweening between adjacent frames.
-- `BeatDetector` (background `sounddevice` thread) computes block RMS,
-  tracks an adaptive noise floor (p10 of recent energies), and fires beat
-  events when instantaneous RMS exceeds rolling mean × sensitivity past
-  cooldown. BPM derived from inter-beat intervals on an audio clock.
+- `BeatDetector` (background `sounddevice` thread) tracks an adaptive
+  noise floor (p10 of recent block RMS) for energy-tier classification,
+  then fires beat events via one of two backends:
+  - **aubio** (preferred) — `aubio.tempo` autocorrelation tempo tracker,
+    phase-locked so subsequent beats land on-beat instead of trailing the
+    kick. BPM comes from aubio's autocorrelation estimate.
+  - **RMS fallback** — instantaneous RMS > rolling mean × sensitivity past
+    cooldown. BPM derived from inter-beat intervals on an audio clock.
+
+  The aubio path is used whenever the library imports successfully; falls
+  back silently otherwise.
 - `AudioReactiveBehavior` maps energy tier → action set
   (`low → idle/eating`, `medium → walk/alert`, `high → run/jump`). A
   strong-beat lockout (`strong_beat_threshold`, `strong_hold_sec`) holds
@@ -191,6 +198,7 @@ Knobs in `[audio]` of `config/default.toml`:
 | `strong_beat_threshold` | beat_strength ≥ this → force `high` tier |
 | `strong_hold_sec` | how long a strong beat locks the high tier |
 | `silence_timeout_sec` | retained as kwarg for back-compat (not used) |
+| `use_aubio` | toggle the aubio tempo tracker (defaults to `true`) |
 
 ## Gotchas
 

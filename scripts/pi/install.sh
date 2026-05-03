@@ -15,6 +15,10 @@ if [ "${WITH_AUDIO:-1}" = "1" ]; then
     echo "[install] sounddevice + libportaudio2 (audio mode)"
     sudo apt-get install -y libportaudio2 python3-sounddevice \
         || echo "[warn] sounddevice not available via apt — skipping audio"
+
+    echo "[install] aubio (phase-locked tempo tracker)"
+    sudo apt-get install -y python3-aubio \
+        || echo "[warn] aubio not available via apt — RMS fallback will be used"
 fi
 
 # Check tomllib (stdlib on 3.11+); install tomli as fallback for 3.9/3.10.

@@ -48,6 +48,15 @@ pip install --break-system-packages --no-index --find-links="$OFFLINE_WHEELS" \
     pip install --break-system-packages sounddevice
 }
 
+# aubio for phase-locked tempo tracking. Optional — RMS fallback runs if
+# absent. Try apt first (Trixie ships python3-aubio), then PyPI as backup.
+echo "[boot] install python3-aubio for tempo tracking"
+DEBIAN_FRONTEND=noninteractive apt-get install -y python3-aubio || {
+    echo "[boot] apt aubio failed, trying pip"
+    pip install --break-system-packages aubio || \
+        echo "[boot] aubio install failed — beat detector will use RMS fallback"
+}
+
 # Mark done before enabling the kiosk so the bootstrap unit ConditionPath
 # fires correctly even if the reboot is interrupted.
 mkdir -p "$(dirname "$SENTINEL")"
