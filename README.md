@@ -169,6 +169,58 @@ once with `sudo passwd pi` before SSH will accept you. From Android,
 4. `constellation.service` launches the deer fullscreen via `kmsdrm` SDL
    driver. Restarts on failure. Logs to journal.
 
+### Updating an already-deployed Pi over SSH
+
+The kiosk service runs out of `/home/pi/constellation/`, populated by the
+provisioner from `dist/constellation-pi.tar.gz`. To roll out new code
+without re-flashing the SD card:
+
+**Option A — clone the repo on the Pi (one-time setup, then `git pull`):**
+
+```
+# on Pi (first time only)
+cd ~
+sudo apt install -y git
+git clone https://github.com/MaciekBrzeski/constellation.git constellation-src
+# wire the runtime files into where the unit expects them
+rsync -a constellation-src/src/constellation/ constellation/constellation/
+rsync -a constellation-src/assets/ constellation/assets/
+rsync -a constellation-src/config/ constellation/config/
+
+# updates after that
+cd ~/constellation-src && git pull
+rsync -a src/constellation/ ~/constellation/constellation/
+rsync -a assets/ ~/constellation/assets/
+rsync -a config/ ~/constellation/config/
+sudo systemctl restart constellation.service
+```
+
+**Option B — rebuild bundle on dev host, scp over:**
+
+```
+# on dev host
+./scripts/build_pi_bundle.sh
+scp dist/constellation-pi.tar.gz pi@<pi-ip>:/tmp/
+
+# on Pi
+cd ~/constellation
+tar xzf /tmp/constellation-pi.tar.gz --strip-components=1
+sudo systemctl restart constellation.service
+```
+
+**Installing aubio** (one-time, for phase-locked beat tracking):
+
+```
+sudo apt install -y python3-aubio
+python3 -c "import aubio; print(aubio.version)"   # expects 0.4.9
+sudo systemctl restart constellation.service
+journalctl -u constellation.service -n 5 --no-pager
+# look for: [audio] aubio tempo tracker active (phase-locked)
+```
+
+Without aubio installed, `BeatDetector` falls back to the RMS path
+silently — log will say `aubio unavailable, using RMS onset detection`.
+
 ### Debugging on the Pi
 
 - `journalctl -u constellation-bootstrap.service` — first-boot log
