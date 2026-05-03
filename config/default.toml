@@ -16,7 +16,7 @@ animals = ["deer_male", "deer_female", "sample"]
 action_rotate_min_sec = 8.0
 action_rotate_max_sec = 20.0
 tempo_rotate_factor = 1.0
-strong_beat_threshold = 4.0
+strong_beat_threshold = 2.3
 strong_hold_sec = 2.5
 
 [render]
