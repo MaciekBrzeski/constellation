@@ -23,10 +23,11 @@ for sub in animation audio geometry rendering; do
     cp -r "src/constellation/$sub" "$OUT_DIR/constellation/"
 done
 
-# cli: only run.py (preprocess.py needs cv2/PIL)
+# cli: run.py + master.py (preprocess.py needs cv2/PIL — skip)
 mkdir -p "$OUT_DIR/constellation/cli"
 cp src/constellation/cli/__init__.py "$OUT_DIR/constellation/cli/"
 cp src/constellation/cli/run.py      "$OUT_DIR/constellation/cli/"
+cp src/constellation/cli/master.py   "$OUT_DIR/constellation/cli/"
 
 # preprocessing: only export.py (pure stdlib, imported by controller)
 mkdir -p "$OUT_DIR/constellation/preprocessing"
@@ -54,6 +55,7 @@ cp scripts/pi/constellation-bootstrap.sh "$OUT_DIR/"
 mkdir -p "$OUT_DIR/systemd"
 cp scripts/pi/systemd/constellation.service "$OUT_DIR/systemd/"
 cp scripts/pi/systemd/constellation-bootstrap.service "$OUT_DIR/systemd/"
+cp scripts/pi/systemd/constellation-master.service "$OUT_DIR/systemd/"
 chmod +x "$OUT_DIR"/install.sh "$OUT_DIR"/run.sh "$OUT_DIR"/constellation-bootstrap.sh
 
 echo "[build] tarball"

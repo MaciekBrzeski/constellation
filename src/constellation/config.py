@@ -82,6 +82,14 @@ class AudioConfig:
 
 
 @dataclass(frozen=True)
+class NetworkConfig:
+    mode: str = "standalone"  # "standalone" | "master" | "worker"
+    broadcast_host: str = "255.255.255.255"
+    bind_host: str = "0.0.0.0"
+    port: int = 49500
+
+
+@dataclass(frozen=True)
 class AppConfig:
     mode: str = "windowed"
     assets_dir: str = "assets"
@@ -90,6 +98,7 @@ class AppConfig:
     render: RenderConfig = field(default_factory=RenderConfig)
     animation: AnimationConfig = field(default_factory=AnimationConfig)
     audio: AudioConfig = field(default_factory=AudioConfig)
+    network: NetworkConfig = field(default_factory=NetworkConfig)
 
 
 def _parse_color(val: list[int]) -> tuple[int, int, int]:
@@ -126,6 +135,7 @@ def load_config(path: Path | None = None) -> AppConfig:
     animation = AnimationConfig(**anim_raw)
 
     audio = AudioConfig(**raw.get("audio", {}))
+    network = NetworkConfig(**raw.get("network", {}))
 
     return AppConfig(
         mode=raw.get("mode", "windowed"),
@@ -135,4 +145,5 @@ def load_config(path: Path | None = None) -> AppConfig:
         render=render,
         animation=animation,
         audio=audio,
+        network=network,
     )

@@ -1,0 +1,20 @@
+[Unit]
+Description=Constellation audio brain (UDP beat broadcaster)
+After=multi-user.target network-online.target sound.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+Group=pi
+SupplementaryGroups=audio tty
+WorkingDirectory=/home/pi/constellation
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/usr/bin/python3 -m constellation.cli.master --config config/default.toml
+Restart=on-failure
+RestartSec=3
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

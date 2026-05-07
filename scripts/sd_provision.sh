@@ -18,9 +18,17 @@
 #       --boot   /run/media/wruszbit/bootfs \
 #       --ssid   'MyNetwork' \
 #       --psk    'mypassword' \
+#       [--role standalone|brain|worker] \
+#       [--animal NAME]            # required for --role worker
+#       [--master HOST:PORT]       # for worker; default 0.0.0.0:49500
 #       [--ssh-pubkey ~/.ssh/id_ed25519.pub] \
 #       [--bundle dist/constellation-pi.tar.gz] \
 #       [--user pi]
+#
+# Roles:
+#   standalone (default): mic + display on one Pi, current behavior.
+#   brain:                mic-only Pi, broadcasts beats over UDP, no display.
+#   worker:               display-only Pi, listens for beats from a brain Pi.
 
 set -euo pipefail
 
@@ -35,6 +43,9 @@ PSK=""
 BUNDLE="dist/constellation-pi.tar.gz"
 PI_USER="pi"
 SSH_PUBKEY=""
+ROLE="standalone"
+ANIMAL=""
+MASTER="0.0.0.0:49500"
 while [[ $# -gt 0 ]]; do
     case $1 in
         --rootfs)      ROOTFS=$2;     shift 2 ;;
@@ -44,9 +55,20 @@ while [[ $# -gt 0 ]]; do
         --bundle)      BUNDLE=$2;     shift 2 ;;
         --user)        PI_USER=$2;    shift 2 ;;
         --ssh-pubkey)  SSH_PUBKEY=$2; shift 2 ;;
+        --role)        ROLE=$2;       shift 2 ;;
+        --animal)      ANIMAL=$2;     shift 2 ;;
+        --master)      MASTER=$2;     shift 2 ;;
         *) die "unknown arg: $1" ;;
     esac
 done
+
+case $ROLE in
+    standalone|brain|worker) ;;
+    *) die "--role must be one of: standalone, brain, worker (got: $ROLE)" ;;
+esac
+if [[ $ROLE == "worker" && -z $ANIMAL ]]; then
+    die "--role worker requires --animal NAME"
+fi
 
 [[ $EUID -eq 0 ]] || die "must run as root (use sudo)"
 [[ -n $ROOTFS && -d $ROOTFS ]] || die "--rootfs path missing or not a directory"
@@ -84,11 +106,41 @@ tar xzf "$BUNDLE_ABS" -C "$TARGET_DIR" --strip-components=1
 chown -R "$PI_UID:$PI_GID" "$TARGET_DIR"
 
 # ----- install systemd units
-log "installing systemd units"
-install -m 0644 "$TARGET_DIR/systemd/constellation.service" \
-    "$ROOTFS/etc/systemd/system/constellation.service"
+log "installing systemd units (role=$ROLE)"
 install -m 0644 "$TARGET_DIR/systemd/constellation-bootstrap.service" \
     "$ROOTFS/etc/systemd/system/constellation-bootstrap.service"
+
+UNIT_DST="$ROOTFS/etc/systemd/system/constellation.service"
+MASTER_UNIT_DST="$ROOTFS/etc/systemd/system/constellation-master.service"
+
+if [[ -f "$TARGET_DIR/systemd/constellation-master.service" ]]; then
+    install -m 0644 "$TARGET_DIR/systemd/constellation-master.service" \
+        "$MASTER_UNIT_DST"
+fi
+
+case $ROLE in
+    standalone)
+        install -m 0644 "$TARGET_DIR/systemd/constellation.service" "$UNIT_DST"
+        ;;
+    brain)
+        # No display unit on brain Pi — only the broadcaster runs.
+        rm -f "$UNIT_DST"
+        if [[ ! -f "$MASTER_UNIT_DST" ]]; then
+            die "constellation-master.service missing from bundle — rebuild with scripts/build_pi_bundle.sh"
+        fi
+        ;;
+    worker)
+        # Replace the standalone unit's ExecStart so the Pi listens for beats
+        # over UDP and renders a specific animal instead of opening a mic.
+        install -m 0644 "$TARGET_DIR/systemd/constellation.service" "$UNIT_DST"
+        sed -i -E "s|^ExecStart=.*|ExecStart=/usr/bin/python3 -m constellation --config config/default.toml --animal ${ANIMAL} --mode fullscreen --remote-beat ${MASTER}|" \
+            "$UNIT_DST"
+        ;;
+esac
+
+# Stamp the role for the bootstrap script to read.
+mkdir -p "$ROOTFS/var/lib/constellation"
+echo "$ROLE" > "$ROOTFS/var/lib/constellation/role"
 
 # ----- install bootstrap script
 log "installing /usr/local/bin/constellation-bootstrap.sh"
@@ -100,9 +152,19 @@ log "enabling units in multi-user.target.wants"
 WANTS="$ROOTFS/etc/systemd/system/multi-user.target.wants"
 mkdir -p "$WANTS"
 ln -sfn ../constellation-bootstrap.service "$WANTS/constellation-bootstrap.service"
-# Note: constellation.service gets enabled by the bootstrap on first boot,
-# but pre-creating the symlink makes it survive even if bootstrap is re-run.
-ln -sfn ../constellation.service "$WANTS/constellation.service"
+
+case $ROLE in
+    standalone|worker)
+        # Pre-create the kiosk symlink — bootstrap re-enables on first boot,
+        # this just makes it survive re-runs.
+        ln -sfn ../constellation.service "$WANTS/constellation.service"
+        rm -f "$WANTS/constellation-master.service"
+        ;;
+    brain)
+        ln -sfn ../constellation-master.service "$WANTS/constellation-master.service"
+        rm -f "$WANTS/constellation.service"
+        ;;
+esac
 
 # ----- mask the first-boot wizard so headless boot doesn't hang on it
 log "masking userconfig.service (Pi OS first-boot wizard)"
@@ -187,8 +249,22 @@ done
 # ----- final sync
 sync
 log "done. summary:"
+echo "  role:        $ROLE"
+case $ROLE in
+    worker)
+        echo "  animal:      $ANIMAL"
+        echo "  master:      $MASTER (UDP)"
+        ;;
+    brain)
+        echo "  master:      broadcasting on port 49500 (config/default.toml)"
+        ;;
+esac
 echo "  bundle:      $TARGET_DIR ($(find "$TARGET_DIR" -type f | wc -l) files)"
-echo "  units:       constellation.service + constellation-bootstrap.service"
+case $ROLE in
+    standalone) echo "  units:       constellation.service + constellation-bootstrap.service" ;;
+    brain)      echo "  units:       constellation-master.service + constellation-bootstrap.service" ;;
+    worker)     echo "  units:       constellation.service (worker, --remote-beat) + constellation-bootstrap.service" ;;
+esac
 echo "  wifi:        $NM_FILE (mode 600)"
 echo "  user:        $PI_USER added to audio,video,render,input,tty"
 echo "  wizard:      userconfig.service masked"

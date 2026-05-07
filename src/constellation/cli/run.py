@@ -59,8 +59,21 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--assets", type=Path, default=None, help="Assets directory (overrides config)"
     )
-    parser.add_argument(
-        "--audio", action="store_true", default=False, help="Enable beat-driven animation from mic"
+    audio_group = parser.add_mutually_exclusive_group()
+    audio_group.add_argument(
+        "--audio",
+        action="store_true",
+        default=False,
+        help="Enable beat-driven animation from mic",
+    )
+    audio_group.add_argument(
+        "--remote-beat",
+        default=None,
+        metavar="HOST:PORT",
+        help=(
+            "Listen for beat events on UDP HOST:PORT instead of using a "
+            "local mic. Use 0.0.0.0 to bind all interfaces."
+        ),
     )
     parser.add_argument(
         "--sensitivity",
@@ -76,7 +89,7 @@ def main(argv: list[str] | None = None) -> None:
     args = parser.parse_args(argv)
     config = load_config(args.config)
 
-    # Set up optional beat detector
+    # Set up optional beat detector (local mic) or remote receiver (network)
     beat_detector = None
     audio_behavior = None
     if args.audio:
@@ -107,6 +120,15 @@ def main(argv: list[str] | None = None) -> None:
             print("[audio] aubio tempo tracker active (phase-locked)")
         else:
             print("[audio] aubio unavailable, using RMS onset detection")
+    elif args.remote_beat is not None:
+        from constellation.audio.network import BeatReceiver, DEFAULT_PORT
+
+        host, _, port_s = args.remote_beat.partition(":")
+        port = int(port_s) if port_s else DEFAULT_PORT
+        bind_host = host if host else config.network.bind_host
+        beat_detector = BeatReceiver(port=port, bind_host=bind_host)
+        beat_detector.start()
+        print(f"[audio] remote beat receiver active on {bind_host}:{port}")
 
     assets_dir = Path(args.assets) if args.assets else Path(config.assets_dir)
     controller = AnimationController(config.animation, assets_dir)

@@ -169,6 +169,70 @@ once with `sudo passwd pi` before SSH will accept you. From Android,
 4. `constellation.service` launches the deer fullscreen via `kmsdrm` SDL
    driver. Restarts on failure. Logs to journal.
 
+### Multi-projector setup (brain Pi + worker Pis)
+
+Scaling beyond one projector: a dedicated **brain Pi** (mic only, no
+HDMI) detects beats and broadcasts them over UDP on the local Wi-Fi.
+Each **worker Pi** drives one projector and listens to the brain
+instead of opening its own mic — so every animal advances frames on the
+same beat, but each picks its own action so the projectors show
+visually distinct content.
+
+Three roles: `standalone` (default — mic + display, current behavior),
+`brain` (mic only), `worker` (display only, network-driven).
+
+Provision one card per role:
+
+```
+# Brain Pi (no display, mic only)
+sudo bash scripts/sd_provision.sh \
+    --rootfs /run/media/$USER/rootfs --boot /run/media/$USER/bootfs \
+    --ssid 'MyNetwork' --psk 'mypassword' \
+    --role brain
+
+# Worker Pi A — deer on projector 1
+sudo bash scripts/sd_provision.sh \
+    --rootfs /run/media/$USER/rootfs --boot /run/media/$USER/bootfs \
+    --ssid 'MyNetwork' --psk 'mypassword' \
+    --role worker --animal deer_male
+
+# Worker Pi B — wolf on projector 2
+sudo bash scripts/sd_provision.sh \
+    --rootfs /run/media/$USER/rootfs --boot /run/media/$USER/bootfs \
+    --ssid 'MyNetwork' --psk 'mypassword' \
+    --role worker --animal wolf
+```
+
+All three Pis must be on the same Wi-Fi SSID. The brain broadcasts to
+`255.255.255.255:49500`; workers bind `0.0.0.0:49500` by default.
+Override with `--master HOST:PORT` on the worker provisioner if you
+want to point at a specific brain IP instead of relying on broadcast.
+
+Verification:
+
+```
+# On the brain Pi
+journalctl -u constellation-master.service -f
+# Expect: [master] aubio tempo tracker active (phase-locked)
+#         [master] broadcasting beats to 255.255.255.255:49500
+#         [master] beat tier=high bpm=128.0 strength=4.20
+
+# On a worker Pi
+journalctl -u constellation.service -f
+# Expect: [audio] remote beat receiver active on 0.0.0.0:49500
+```
+
+Smoke test on a single dev host (3 terminals, no Pis):
+
+```
+constellation-master --host 127.0.0.1
+constellation-run --remote-beat 127.0.0.1:49500 --animal deer_male --mode windowed
+constellation-run --remote-beat 127.0.0.1:49500 --animal deer_female --mode windowed
+```
+
+Clap or play music near the mic — both windows should advance frames
+together, but each should pick its own action.
+
 ### Updating an already-deployed Pi over SSH
 
 The kiosk service runs out of `/home/pi/constellation/`, populated by the

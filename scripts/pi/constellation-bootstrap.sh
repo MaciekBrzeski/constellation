@@ -62,8 +62,19 @@ DEBIAN_FRONTEND=noninteractive apt-get install -y python3-aubio || {
 mkdir -p "$(dirname "$SENTINEL")"
 touch "$SENTINEL"
 
-echo "[boot] enable constellation.service"
-systemctl enable constellation.service
+ROLE_FILE=/var/lib/constellation/role
+ROLE=$(cat "$ROLE_FILE" 2>/dev/null || echo standalone)
+echo "[boot] role=$ROLE"
+case $ROLE in
+    brain)
+        echo "[boot] enable constellation-master.service"
+        systemctl enable constellation-master.service
+        ;;
+    standalone|worker|*)
+        echo "[boot] enable constellation.service"
+        systemctl enable constellation.service
+        ;;
+esac
 
 echo "[boot] disable bootstrap, reboot"
 systemctl disable constellation-bootstrap.service || true
