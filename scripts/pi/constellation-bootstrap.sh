@@ -67,6 +67,11 @@ ROLE=$(cat "$ROLE_FILE" 2>/dev/null || echo standalone)
 echo "[boot] role=$ROLE"
 case $ROLE in
     brain)
+        echo "[boot] install GUI deps (fastapi + uvicorn) for control dashboard"
+        DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            python3-fastapi python3-uvicorn 2>/dev/null || \
+            pip install --break-system-packages fastapi 'uvicorn[standard]' || \
+            echo "[boot] GUI deps install failed — --gui will be unavailable"
         echo "[boot] enable constellation-master.service"
         systemctl enable constellation-master.service
         ;;

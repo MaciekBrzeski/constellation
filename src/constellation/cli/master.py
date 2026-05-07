@@ -38,6 +38,23 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Beat detection sensitivity (overrides config)",
     )
+    parser.add_argument(
+        "--gui",
+        action="store_true",
+        default=False,
+        help="Serve the browser control dashboard (requires the [gui] extra)",
+    )
+    parser.add_argument(
+        "--web-host",
+        default="0.0.0.0",
+        help="Bind host for the web UI (default: all interfaces)",
+    )
+    parser.add_argument(
+        "--web-port",
+        type=int,
+        default=8000,
+        help="Port for the web UI (default: 8000)",
+    )
     return parser
 
 
@@ -49,6 +66,7 @@ def main(argv: list[str] | None = None) -> None:
     try:
         from constellation.audio.beat import BeatDetector
         from constellation.audio.network import BeatBroadcaster
+        from constellation.control.master import ControlChannel
     except RuntimeError as exc:
         print(f"Audio error: {exc}", file=sys.stderr)
         sys.exit(1)
@@ -77,12 +95,15 @@ def main(argv: list[str] | None = None) -> None:
     )
     broadcaster = BeatBroadcaster(detector, host=host, port=port)
     broadcaster.start()
+    control = ControlChannel()
+    control.start()
 
     if detector.aubio_active:
         print("[master] aubio tempo tracker active (phase-locked)")
     else:
         print("[master] aubio unavailable, using RMS onset detection")
     print(f"[master] broadcasting beats to {host}:{port}")
+    print(f"[master] control plane listening for heartbeats on port 49501")
 
     stop_signal = {"stop": False}
 
@@ -91,6 +112,35 @@ def main(argv: list[str] | None = None) -> None:
 
     signal.signal(signal.SIGTERM, _on_signal)
     signal.signal(signal.SIGINT, _on_signal)
+
+    if args.gui:
+        try:
+            import uvicorn
+
+            from constellation.web.app import create_app
+        except ImportError:
+            print(
+                "Web UI requires the [gui] extra. Install with: "
+                "pip install 'constellation[gui]'",
+                file=sys.stderr,
+            )
+            broadcaster.stop()
+            control.stop()
+            sys.exit(1)
+        app = create_app(detector, control)
+        print(
+            f"[master] web UI on http://{args.web_host}:{args.web_port}/  (Ctrl+C to stop)",
+            flush=True,
+        )
+        try:
+            uvicorn.run(
+                app, host=args.web_host, port=args.web_port, log_level="warning"
+            )
+        finally:
+            broadcaster.stop()
+            control.stop()
+            print("[master] stopped", flush=True)
+        return
 
     last_log = 0.0
     last_logged_beat_ms = -1.0
@@ -114,6 +164,7 @@ def main(argv: list[str] | None = None) -> None:
                 )
     finally:
         broadcaster.stop()
+        control.stop()
         print("[master] stopped", flush=True)
 
 

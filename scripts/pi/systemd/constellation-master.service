@@ -10,7 +10,7 @@ Group=pi
 SupplementaryGroups=audio tty
 WorkingDirectory=/home/pi/constellation
 Environment=PYTHONUNBUFFERED=1
-ExecStart=/usr/bin/python3 -m constellation.cli.master --config config/default.toml
+ExecStart=/usr/bin/python3 -m constellation.cli.master --config config/default.toml --gui --web-host 0.0.0.0 --web-port 8000
 Restart=on-failure
 RestartSec=3
 StandardOutput=journal

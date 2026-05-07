@@ -19,7 +19,7 @@ cp src/constellation/__main__.py      "$OUT_DIR/constellation/"
 cp src/constellation/config.py        "$OUT_DIR/constellation/"
 
 # Subpackages that don't need cv2/PIL
-for sub in animation audio geometry rendering; do
+for sub in animation audio geometry rendering control web; do
     cp -r "src/constellation/$sub" "$OUT_DIR/constellation/"
 done
 

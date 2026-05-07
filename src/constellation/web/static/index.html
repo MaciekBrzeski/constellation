@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>constellation control</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <header>
+    <h1>constellation</h1>
+    <span id="conn" class="badge offline">disconnected</span>
+  </header>
+
+  <main>
+    <section class="card master">
+      <h2>master</h2>
+      <div class="row">
+        <span class="label">tier</span>
+        <span id="tier" class="value tier-low">low</span>
+      </div>
+      <div class="row">
+        <span class="label">bpm</span>
+        <span id="bpm" class="value">—</span>
+      </div>
+      <div class="row">
+        <span class="label">beat</span>
+        <span id="beat" class="beat-dot"></span>
+        <span id="strength" class="value small">0.00</span>
+      </div>
+      <div class="row">
+        <span class="label">noise floor</span>
+        <span id="floor" class="value small">—</span>
+      </div>
+      <div class="row">
+        <span class="label">aubio</span>
+        <span id="aubio" class="badge">?</span>
+      </div>
+
+      <div class="slider">
+        <label for="sensitivity">sensitivity <span id="sens-val">1.50</span></label>
+        <input id="sensitivity" type="range" min="0.5" max="5.0" step="0.05" value="1.5" />
+      </div>
+    </section>
+
+    <section class="card workers">
+      <h2>workers</h2>
+      <div id="worker-list" class="worker-list">
+        <p class="empty">waiting for heartbeats…</p>
+      </div>
+    </section>
+  </main>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

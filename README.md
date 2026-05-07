@@ -226,12 +226,33 @@ Smoke test on a single dev host (3 terminals, no Pis):
 
 ```
 constellation-master --host 127.0.0.1
-constellation-run --remote-beat 127.0.0.1:49500 --animal deer_male --mode windowed
-constellation-run --remote-beat 127.0.0.1:49500 --animal deer_female --mode windowed
+constellation-run --remote-beat 127.0.0.1:49500 --animal deer_male  --mode windowed --master-host 127.0.0.1
+constellation-run --remote-beat 127.0.0.1:49500 --animal deer_female --mode windowed --master-host 127.0.0.1
 ```
 
 Clap or play music near the mic — both windows should advance frames
 together, but each should pick its own action.
+
+### Browser control dashboard
+
+The master Pi can serve a single-page browser UI to monitor live state
+(tier, BPM, beat indicator, noise floor) and remote-control workers
+(pick animal + action per worker, tweak detector sensitivity live):
+
+```
+pip install -e '.[gui]'
+constellation-master --gui --host 127.0.0.1 --web-host 0.0.0.0 --web-port 8000
+```
+
+Open `http://<master-ip>:8000/` from any device on the same network —
+phone, laptop, the master itself. The page connects via WebSocket and
+updates at 10 Hz. Workers register automatically via 1 Hz UDP heartbeats
+sent to port 49501; the dashboard shows online/offline status and the
+list of animals each worker has loaded.
+
+When provisioned with `--role brain`, the systemd unit launches with
+`--gui` enabled by default; `python3-fastapi` and `python3-uvicorn` are
+installed by the first-boot bootstrap.
 
 ### Updating an already-deployed Pi over SSH
 

@@ -16,12 +16,19 @@ dependencies = [
 
 [project.optional-dependencies]
 audio = ["sounddevice>=0.4.6"]
+gui = [
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.27",
+]
 dev = [
     "mypy>=1.8",
     "pytest-cov>=4.1",
     "pytest>=7.4",
     "ruff>=0.4",
     "sounddevice>=0.4.6",
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.27",
+    "httpx>=0.27",
 ]
 
 [project.scripts]

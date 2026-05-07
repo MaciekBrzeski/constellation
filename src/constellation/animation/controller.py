@@ -59,6 +59,22 @@ class AnimationController:
             self._animal_index = (self._animal_index + 1) % len(self._animals)
             self._frame_index = 0
 
+    def set_animal(self, name: str) -> bool:
+        """Switch to a named animal. Returns True if found and switched."""
+        names = self.animal_names
+        if name not in names:
+            return False
+        self._animal_index = names.index(name)
+        self._frame_index = 0
+        return True
+
+    def available_actions(self, animal_name: str | None = None) -> list[str]:
+        """List action names defined for the given animal (or current)."""
+        name = animal_name or self.current_animal_name
+        if name is None or name not in self._animals:
+            return []
+        return [a.action for a in self._animals[name].animations]
+
     def set_action(self, action: str) -> None:
         """Switch to a named action (e.g. idle, walk)."""
         self._action = action

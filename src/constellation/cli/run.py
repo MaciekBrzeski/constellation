@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import socket
 import sys
 from pathlib import Path
 
@@ -81,6 +82,22 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Beat detection sensitivity (overrides config, default 1.5)",
     )
+    parser.add_argument(
+        "--worker-id",
+        default=None,
+        help=(
+            "Identifier this worker reports in heartbeats (defaults to hostname). "
+            "Only used when --remote-beat is set."
+        ),
+    )
+    parser.add_argument(
+        "--master-host",
+        default="255.255.255.255",
+        help=(
+            "Where to send heartbeats. Default: 255.255.255.255 (broadcast). "
+            "Set to a specific IP to bypass broadcast on routed networks."
+        ),
+    )
     return parser
 
 
@@ -150,6 +167,21 @@ def main(argv: list[str] | None = None) -> None:
             strong_hold_sec=config.animation.strong_hold_sec,
         )
 
+    # Worker control plane — heartbeat to master + receive remote commands.
+    worker_control = None
+    if args.remote_beat is not None:
+        from constellation.control.worker import WorkerControl
+
+        worker_id = args.worker_id or socket.gethostname()
+        worker_control = WorkerControl(
+            worker_id=worker_id,
+            controller=controller,
+            beat_source=beat_detector,
+            master_host=args.master_host,
+        )
+        worker_control.start()
+        print(f"[control] worker_id={worker_id} heartbeat → {args.master_host}:49501")
+
     surface = create_display(config)
     display_size = surface.get_size()
     clock = FrameClock(config.display.fps)
@@ -182,6 +214,13 @@ def main(argv: list[str] | None = None) -> None:
                     idx = _KEY_TO_INDEX[event.key]
                     if idx < len(actions):
                         controller.set_action(actions[idx])
+
+        # Apply any pending remote commands (set_animal / set_action) from
+        # the master Pi before behavior runs, so a manual override takes
+        # effect on this frame instead of being clobbered by the next tier
+        # rotation.
+        if worker_control is not None:
+            worker_control.apply_pending()
 
         # Audio-reactive behavior update
         if audio_behavior is not None:
@@ -259,6 +298,8 @@ def main(argv: list[str] | None = None) -> None:
             star_indices=star_indices,
         )
 
+    if worker_control is not None:
+        worker_control.stop()
     if beat_detector is not None:
         beat_detector.stop()
     cleanup()
