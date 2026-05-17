@@ -49,6 +49,7 @@ class BeatDetector:
         tempo_history_size: int = 8,
         min_noise_floor: float = 0.002,
         use_aubio: bool = True,
+        device: int | str | None = None,
     ) -> None:
         self.sensitivity = sensitivity
         self.cooldown_ms = cooldown_ms
@@ -56,6 +57,9 @@ class BeatDetector:
         self.sample_rate = sample_rate
         self.block_size = block_size
         self.noise_gate = noise_gate
+        # Input device for the capture stream. ``None`` = system default;
+        # may be a PortAudio device index or a (substring) name.
+        self.device = device
         self._low_intensity_ratio = low_intensity_ratio
         self._high_intensity_ratio = high_intensity_ratio
         self._min_noise_floor = min_noise_floor
@@ -156,6 +160,24 @@ class BeatDetector:
     def last_beat_audio_ms(self) -> float:
         """Audio-time (milliseconds) of the last detected beat."""
         return self._last_beat_audio_ms
+
+    @property
+    def low_intensity_ratio(self) -> float:
+        """Intensity below this classifies the energy tier as ``'low'``."""
+        return self._low_intensity_ratio
+
+    @low_intensity_ratio.setter
+    def low_intensity_ratio(self, value: float) -> None:
+        self._low_intensity_ratio = value
+
+    @property
+    def high_intensity_ratio(self) -> float:
+        """Intensity at or above this classifies the energy tier as ``'high'``."""
+        return self._high_intensity_ratio
+
+    @high_intensity_ratio.setter
+    def high_intensity_ratio(self, value: float) -> None:
+        self._high_intensity_ratio = value
 
     # ------------------------------------------------------------- processing
     def _audio_callback(self, indata: np.ndarray, frames: int, time_info, status) -> None:
@@ -296,6 +318,12 @@ class BeatDetector:
                 "sounddevice is required for audio beat detection. "
                 "Install it with: pip install 'constellation[audio]'"
             ) from exc
+        except OSError as exc:
+            # sounddevice imports but PortAudio's shared library is missing.
+            raise RuntimeError(
+                f"PortAudio runtime not found ({exc}). Install it with: "
+                "sudo apt install libportaudio2"
+            ) from exc
 
         if self._use_aubio:
             try:
@@ -320,6 +348,7 @@ class BeatDetector:
                 channels=1,
                 dtype="float32",
                 callback=self._audio_callback,
+                device=self.device,
             )
             self._stream.start()
         except sd.PortAudioError as exc:
@@ -340,3 +369,26 @@ class BeatDetector:
     def aubio_active(self) -> bool:
         """True when the aubio tempo tracker is in use for this run."""
         return self._aubio_tempo is not None
+
+
+def list_input_devices() -> list[tuple[int, str]]:
+    """Enumerate audio devices with input channels.
+
+    Returns ``(index, name)`` pairs for every device that can capture
+    audio. Never raises: if ``sounddevice`` isn't installed or PortAudio
+    isn't available (``libportaudio2`` missing), returns an empty list so
+    callers can show a friendly "no microphone" message instead of crashing.
+    """
+    try:
+        import sounddevice as sd
+    except (ImportError, OSError):
+        return []
+    try:
+        devices = sd.query_devices()
+    except Exception:
+        return []
+    result: list[tuple[int, str]] = []
+    for idx, dev in enumerate(devices):
+        if dev.get("max_input_channels", 0) > 0:
+            result.append((idx, str(dev.get("name", f"device {idx}"))))
+    return result

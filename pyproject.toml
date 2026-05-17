@@ -35,6 +35,7 @@ dev = [
 constellation-preprocess = "constellation.cli.preprocess:main"
 constellation-run = "constellation.cli.run:main"
 constellation-master = "constellation.cli.master:main"
+constellation-control = "constellation.cli.control:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

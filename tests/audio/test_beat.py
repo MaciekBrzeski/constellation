@@ -145,3 +145,30 @@ def test_aubio_bpm_overrides_interval_estimate() -> None:
     det._process_energy(0.5, aubio_beat=True, aubio_bpm=140.0)
     det._process_energy(0.5, aubio_beat=True, aubio_bpm=141.0)
     assert det.bpm == 141.0
+
+
+def test_device_param_is_stored() -> None:
+    """The device kwarg is retained for the capture stream; defaults to None."""
+    assert _det(device=3).device == 3
+    assert _det().device is None
+
+
+def test_intensity_ratio_setters() -> None:
+    """Public ratio setters proxy the private tier-classification thresholds."""
+    det = _det()
+    det.low_intensity_ratio = 3.0
+    det.high_intensity_ratio = 9.0
+    assert det.low_intensity_ratio == 3.0
+    assert det.high_intensity_ratio == 9.0
+    assert det._low_intensity_ratio == 3.0
+    assert det._high_intensity_ratio == 9.0
+
+
+def test_list_input_devices_never_raises() -> None:
+    """list_input_devices() returns a list even when PortAudio is unavailable."""
+    from constellation.audio.beat import list_input_devices
+
+    result = list_input_devices()
+    assert isinstance(result, list)
+    assert all(isinstance(idx, int) and isinstance(name, str)
+               for idx, name in result)

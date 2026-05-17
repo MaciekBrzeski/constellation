@@ -6,7 +6,8 @@ try:
     import tomllib
 except ImportError:  # Python < 3.11 fallback
     import tomli as tomllib  # type: ignore[no-redef]
-from dataclasses import dataclass, field
+import os
+from dataclasses import dataclass, field, fields
 from pathlib import Path
 
 
@@ -79,6 +80,9 @@ class AudioConfig:
     tempo_history_size: int = 8
     min_noise_floor: float = 0.002
     use_aubio: bool = True
+    # Input device name for the capture stream. ``None`` = system default.
+    # Stores the device *name* (not index) — indices shift across re-plug.
+    device: str | None = None
 
 
 @dataclass(frozen=True)
@@ -105,15 +109,42 @@ def _parse_color(val: list[int]) -> tuple[int, int, int]:
     return (val[0], val[1], val[2])
 
 
+def user_config_path() -> Path:
+    """Path to the per-user config overlay (``~/.config/constellation``).
+
+    Machine-specific tuning (chosen microphone, calibrated detector values)
+    is saved here so it survives restarts without churning the
+    version-controlled ``config/default.toml``.
+    """
+    base = os.environ.get("XDG_CONFIG_HOME") or str(Path.home() / ".config")
+    return Path(base) / "constellation" / "config.toml"
+
+
+# Overlay sections deep-merged on top of the base config when present.
+_OVERLAY_SECTIONS = ("audio", "network")
+
+
 def load_config(path: Path | None = None) -> AppConfig:
     if path is None:
         path = Path("config/default.toml")
 
-    if not path.exists():
-        return AppConfig()
+    raw: dict = {}
+    if path.exists():
+        with open(path, "rb") as f:
+            raw = tomllib.load(f)
 
-    with open(path, "rb") as f:
-        raw = tomllib.load(f)
+    # Merge the per-user overlay (if any) on top of the base config —
+    # per-section shallow update, so overlay keys win but unset keys fall
+    # back to the base / dataclass defaults.
+    overlay_path = user_config_path()
+    if overlay_path.exists():
+        with open(overlay_path, "rb") as f:
+            overlay = tomllib.load(f)
+        for section in _OVERLAY_SECTIONS:
+            if isinstance(overlay.get(section), dict):
+                merged = dict(raw.get(section, {}))
+                merged.update(overlay[section])
+                raw[section] = merged
 
     display_raw = raw.get("display", {})
     if "bg_color" in display_raw:
@@ -147,3 +178,59 @@ def load_config(path: Path | None = None) -> AppConfig:
         audio=audio,
         network=network,
     )
+
+
+def _toml_value(value: object) -> str:
+    """Serialise a scalar to a TOML literal. bool/int/float/str only."""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, float):
+        return repr(value)
+    if isinstance(value, str):
+        escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+        return f'"{escaped}"'
+    raise TypeError(f"unsupported TOML value: {value!r}")
+
+
+def _dump_toml(sections: dict[str, dict]) -> str:
+    """Render ``{section: {key: scalar}}`` as a flat TOML document."""
+    out: list[str] = []
+    for name, table in sections.items():
+        if not isinstance(table, dict):
+            continue
+        out.append(f"[{name}]")
+        for key, value in table.items():
+            out.append(f"{key} = {_toml_value(value)}")
+        out.append("")
+    return "\n".join(out)
+
+
+def save_audio_overrides(audio: AudioConfig, path: Path | None = None) -> None:
+    """Persist the ``[audio]`` section to the per-user config overlay.
+
+    Reads any existing overlay first so other sections (e.g. ``[network]``)
+    are preserved, then atomically rewrites the file. A ``None`` device is
+    omitted (TOML has no null literal).
+    """
+    if path is None:
+        path = user_config_path()
+
+    sections: dict[str, dict] = {}
+    if path.exists():
+        with open(path, "rb") as f:
+            sections = tomllib.load(f)
+
+    audio_table: dict[str, object] = {}
+    for fld in fields(audio):
+        value = getattr(audio, fld.name)
+        if value is None:  # e.g. device unset — TOML can't represent null
+            continue
+        audio_table[fld.name] = value
+    sections["audio"] = audio_table
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(_dump_toml(sections))
+    os.replace(tmp, path)

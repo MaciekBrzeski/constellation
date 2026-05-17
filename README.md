@@ -254,6 +254,46 @@ When provisioned with `--role brain`, the systemd unit launches with
 `--gui` enabled by default; `python3-fastapi` and `python3-uvicorn` are
 installed by the first-boot bootstrap.
 
+### Native desktop control panel
+
+On a brain machine that has a microphone *and* a display, `constellation-control`
+runs the same audio brain (mic capture → `BeatDetector` → UDP beat broadcast →
+worker control plane) behind a native Tkinter window instead of the FastAPI web
+dashboard — no browser needed.
+
+```
+constellation-control                 # or: ./scripts/start-control.sh
+constellation-control --host 192.168.1.50 --port 49500
+```
+
+Two host packages are required (not pip dependencies):
+
+```
+sudo dpkg -i offline/debs/libportaudio2_arm64.deb   # PortAudio runtime (mic)
+sudo apt install python3-tk                          # Tkinter
+```
+
+The window has five tabs:
+
+- **Status** — live energy tier, BPM, noise floor, tier intensity, and a beat
+  indicator that flashes on each detected beat.
+- **Microphone** — pick the input device from a dropdown (Rescan re-enumerates).
+  Switching restarts the capture stream and remembers the choice.
+- **Tuning** — live sliders for `sensitivity`, `noise_gate`, `cooldown_ms`, and
+  the low/high intensity ratios. Changes apply to the detector immediately.
+- **Calibration** — record an N-second sample, see the same RMS/beat/tier report
+  as `scripts/audio_diag.py`, and apply the suggested `sensitivity` /
+  `noise_gate` with one click.
+- **Workers** — every worker Pi that is heartbeating, with online status and
+  per-worker animal/action dropdowns (same commands as the web dashboard).
+
+Detector settings (chosen mic, tuned values) persist to
+`~/.config/constellation/config.toml`, a per-user overlay merged on top of
+`config/default.toml` at startup — so they survive a restart without editing
+the version-controlled default config. If the audio packages are missing the
+window still opens; install them and pick a device on the Microphone tab to
+recover without restarting.
+
 ### Updating an already-deployed Pi over SSH
 
 The kiosk service runs out of `/home/pi/constellation/`, populated by the
