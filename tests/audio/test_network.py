@@ -19,7 +19,9 @@ class _FakeDetector:
     """Minimal stand-in for BeatDetector.
 
     Exposes the surface BeatBroadcaster reads — start/stop, beat_event,
-    energy_tier, bpm, last_beat_audio_ms, last_beat_strength.
+    energy_tier, bpm, last_beat_audio_ms, last_beat_strength, plus the
+    sync fields (beat_count, epoch, last_beat_monotonic_ms,
+    predicted_next_beat_ms).
     """
 
     def __init__(self) -> None:
@@ -28,6 +30,10 @@ class _FakeDetector:
         self.bpm = 0.0
         self.last_beat_audio_ms = 0.0
         self.last_beat_strength = 0.0
+        self.beat_count = -1
+        self.epoch = 0
+        self.last_beat_monotonic_ms = 0.0
+        self.predicted_next_beat_ms = 0.0
         self.started = False
         self.stopped = False
 
@@ -138,6 +144,69 @@ def test_receiver_ignores_malformed_packets() -> None:
         while time.monotonic() < deadline and not rx.beat_event.is_set():
             time.sleep(0.01)
         assert rx.beat_event.is_set()
+    finally:
+        rx.stop()
+
+
+def test_broadcaster_emits_sync_fields() -> None:
+    """Every packet carries brain_ms / beat_count / epoch for the scheduler."""
+    listener = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    listener.bind(("127.0.0.1", 0))
+    port = listener.getsockname()[1]
+
+    detector = _FakeDetector()
+    detector.bpm = 120.0
+    detector.beat_count = 7
+    detector.epoch = 3
+    detector.last_beat_monotonic_ms = 5000.0
+    detector.predicted_next_beat_ms = 5500.0
+
+    bc = BeatBroadcaster(detector, host="127.0.0.1", port=port, send_interval_s=0.01)
+    bc.start()
+    try:
+        msg = _recv_one(listener, timeout=1.0)
+        assert msg["beat_count"] == 7
+        assert msg["epoch"] == 3
+        assert msg["beat_brain_ms"] == 5000.0
+        assert msg["next_beat_brain_ms"] == 5500.0
+        assert msg["interval_ms"] == 500.0  # 60000 / 120 bpm
+        assert "brain_ms" in msg
+    finally:
+        bc.stop()
+        listener.close()
+
+
+def test_receiver_tracks_authoritative_beat_count() -> None:
+    """consume_frame_index() returns the brain's authoritative beat index."""
+    port = 49524
+    rx = BeatReceiver(port=port, bind_host="127.0.0.1", recv_timeout_s=0.05)
+    rx.start()
+    try:
+        sender = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        payload = {
+            "seq": 1,
+            "beat": True,
+            "tier": "high",
+            "bpm": 120.0,
+            "brain_ms": 1000.0,
+            "beat_count": 4,
+            "beat_brain_ms": 1000.0,
+            "next_beat_brain_ms": 0.0,
+            "interval_ms": 500.0,
+            "epoch": 1,
+        }
+        sender.sendto(json.dumps(payload).encode("utf-8"), ("127.0.0.1", port))
+        sender.close()
+
+        deadline = time.monotonic() + 0.5
+        while time.monotonic() < deadline and rx.beat_count < 0:
+            time.sleep(0.01)
+        assert rx.beat_count == 4
+        assert rx.epoch == 1
+        idx = rx.consume_frame_index()
+        assert idx == 4
+        # No new beat → nothing fresh to consume.
+        assert rx.consume_frame_index() is None
     finally:
         rx.stop()
 

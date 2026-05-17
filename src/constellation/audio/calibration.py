@@ -39,6 +39,9 @@ class Event:
     fired: bool
     strength: float
     bpm: float
+    # Per-band spectral flux — populated only on a ``backend="multiband"``
+    # pass, ``None`` for the default RMS pass.
+    band_flux: dict[str, float] | None = None
 
 
 @dataclass
@@ -130,8 +133,18 @@ def load_wav(path: Path) -> tuple[np.ndarray, int]:
     return audio, sr
 
 
-def analyse(audio: np.ndarray, sample_rate: int, cfg: AudioConfig) -> list[Event]:
-    """Replay ``audio`` block-by-block through a detector, return per-block events."""
+def analyse(
+    audio: np.ndarray,
+    sample_rate: int,
+    cfg: AudioConfig,
+    backend: str = "rms",
+) -> list[Event]:
+    """Replay ``audio`` block-by-block through a detector, return per-block events.
+
+    ``backend="rms"`` (default) exercises the wideband RMS onset path.
+    ``backend="multiband"`` runs the multiband spectral-flux detector and
+    feeds its beats into the energy/tier logic, also recording per-band flux.
+    """
     det = BeatDetector(
         sensitivity=cfg.sensitivity,
         cooldown_ms=cfg.cooldown_ms,
@@ -145,6 +158,24 @@ def analyse(audio: np.ndarray, sample_rate: int, cfg: AudioConfig) -> list[Event
         tempo_history_size=cfg.tempo_history_size,
         min_noise_floor=cfg.min_noise_floor,
     )
+    mb = None
+    if backend == "multiband":
+        from constellation.audio.onset import MultibandSpectralFluxDetector
+
+        mb = MultibandSpectralFluxDetector(
+            sample_rate=sample_rate,
+            block_size=cfg.block_size,
+            fft_size=cfg.fft_size,
+            flux_history_size=cfg.flux_history_size,
+            bass_sensitivity=cfg.bass_sensitivity,
+            mid_sensitivity=cfg.mid_sensitivity,
+            high_sensitivity=cfg.high_sensitivity,
+            bass_max_hz=cfg.bass_max_hz,
+            high_min_hz=cfg.high_min_hz,
+            tempo_min_bpm=cfg.tempo_min_bpm,
+            tempo_max_bpm=cfg.tempo_max_bpm,
+            tempo_history_size=cfg.tempo_history_size,
+        )
     events: list[Event] = []
     block_size = cfg.block_size
     n_blocks = len(audio) // block_size
@@ -152,7 +183,13 @@ def analyse(audio: np.ndarray, sample_rate: int, cfg: AudioConfig) -> list[Event
         block = audio[i * block_size : (i + 1) * block_size]
         rms = float(np.sqrt(np.mean(block**2)))
         det.beat_event.clear()
-        det._process_energy(rms)
+        band_flux: dict[str, float] | None = None
+        if mb is not None:
+            result = mb.process_block(block)
+            band_flux = result.band_flux
+            det._process_energy(rms, ext_beat=result.beat, ext_bpm=result.bpm)
+        else:
+            det._process_energy(rms)
         fired = det.beat_event.is_set()
         history = det._energy_history
         rolling = sum(history) / len(history) if history else 0.0
@@ -170,6 +207,7 @@ def analyse(audio: np.ndarray, sample_rate: int, cfg: AudioConfig) -> list[Event
                 fired=fired,
                 strength=det.last_beat_strength if fired else 0.0,
                 bpm=det.bpm,
+                band_flux=band_flux,
             )
         )
     return events

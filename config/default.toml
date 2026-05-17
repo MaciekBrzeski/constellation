@@ -44,6 +44,20 @@ epsilon_pct = 0.004
 sensitivity = 1.5
 cooldown_ms = 200.0
 silence_timeout_sec = 5.0
+# Onset backend: "auto" | "aubio" | "rms" | "multiband".
+# "multiband" = numpy spectral-flux detector — band-split, kick-locked tempo,
+# genre-robust, no aubio system package needed. Recommended for the brain.
+backend = "multiband"
+fft_size = 1024
+flux_history_size = 43
+# *_sensitivity = std-multiplier k in the per-band threshold median + k*std.
+bass_sensitivity = 3.0
+mid_sensitivity = 4.0
+high_sensitivity = 4.0
+bass_max_hz = 250.0
+high_min_hz = 4000.0
+tempo_min_bpm = 50.0
+tempo_max_bpm = 200.0
 
 [network]
 # mode = "standalone" runs the kiosk solo (mic + render on one Pi).
@@ -53,3 +67,14 @@ mode = "standalone"
 broadcast_host = "255.255.255.255"
 bind_host = "0.0.0.0"
 port = 49500
+# WiFi access point hosted by the brain (Switch OLED) — see
+# scripts/switch/setup_ap.sh. ap_mode is informational; the script owns setup.
+ap_mode = false
+ap_ssid = "constellation"
+ap_interface = "wlan0"
+ap_address = "192.168.50.1"
+# Worker beat-sync. render_lead_ms pre-rolls the frame flip onto the beat;
+# predictive_sync = false reverts to the legacy advance-on-packet path.
+render_lead_ms = 16.0
+offset_window_size = 64
+predictive_sync = true

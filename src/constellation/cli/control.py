@@ -88,6 +88,16 @@ def main(argv: list[str] | None = None) -> None:
         min_noise_floor=audio_cfg.min_noise_floor,
         use_aubio=audio_cfg.use_aubio,
         device=_resolve_device(audio_cfg.device),
+        backend=audio_cfg.backend,
+        fft_size=audio_cfg.fft_size,
+        flux_history_size=audio_cfg.flux_history_size,
+        bass_sensitivity=audio_cfg.bass_sensitivity,
+        mid_sensitivity=audio_cfg.mid_sensitivity,
+        high_sensitivity=audio_cfg.high_sensitivity,
+        bass_max_hz=audio_cfg.bass_max_hz,
+        high_min_hz=audio_cfg.high_min_hz,
+        tempo_min_bpm=audio_cfg.tempo_min_bpm,
+        tempo_max_bpm=audio_cfg.tempo_max_bpm,
     )
 
     audio_ok = True

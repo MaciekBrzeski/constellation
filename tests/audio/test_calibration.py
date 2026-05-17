@@ -49,6 +49,21 @@ def test_analyse_detects_periodic_bursts() -> None:
     assert len(fired) >= 5  # roughly one per burst
 
 
+def test_analyse_rms_backend_leaves_band_flux_none() -> None:
+    """The default RMS pass records no per-band flux (regression guard)."""
+    events = analyse(_burst_audio(), _SR, AudioConfig())
+    assert all(e.band_flux is None for e in events)
+
+
+def test_analyse_multiband_backend_records_band_flux() -> None:
+    """The multiband pass runs end-to-end and populates per-band flux."""
+    cfg = AudioConfig()
+    events = analyse(_burst_audio(), _SR, cfg, backend="multiband")
+    assert len(events) == 220
+    assert all(e.band_flux is not None for e in events)
+    assert set(events[-1].band_flux) == {"bass", "mid", "high"}
+
+
 def test_build_report_summarises_events() -> None:
     cfg = AudioConfig()
     audio = _burst_audio()

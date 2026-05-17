@@ -24,6 +24,9 @@ class AnimationController:
         self._animal_index = 0
         self._action = config.default_action
         self._frame_index = 0
+        # Beat index at which the current action started — see advance_to_beat.
+        # None = re-anchor on the next beat (set after any animal/action switch).
+        self._beat_anchor: int | None = None
         self._load_animals()
 
     def _load_animals(self) -> None:
@@ -58,6 +61,7 @@ class AnimationController:
         if self._animals:
             self._animal_index = (self._animal_index + 1) % len(self._animals)
             self._frame_index = 0
+            self._beat_anchor = None
 
     def set_animal(self, name: str) -> bool:
         """Switch to a named animal. Returns True if found and switched."""
@@ -66,6 +70,7 @@ class AnimationController:
             return False
         self._animal_index = names.index(name)
         self._frame_index = 0
+        self._beat_anchor = None
         return True
 
     def available_actions(self, animal_name: str | None = None) -> list[str]:
@@ -79,6 +84,7 @@ class AnimationController:
         """Switch to a named action (e.g. idle, walk)."""
         self._action = action
         self._frame_index = 0
+        self._beat_anchor = None
 
     def current_vertices(self) -> list[tuple[float, float]]:
         """Get the vertices for the current frame.
@@ -188,5 +194,25 @@ class AnimationController:
         return list(frame.stars)
 
     def advance_frame(self) -> None:
-        """Advance to the next animation frame."""
+        """Advance to the next animation frame (relative, time-driven path)."""
         self._frame_index += 1
+
+    def advance_to_beat(self, beat_count: int) -> None:
+        """Set the frame from an authoritative network beat counter.
+
+        Frame index = ``beat_count`` counted from the beat at which the
+        current action started on *this* worker (the anchor). Two workers
+        running different actions still advance one frame per beat together,
+        each relative to its own action's frame 0 — keeping them frame-locked
+        while showing distinct content.
+
+        The anchor is cleared on any animal/action switch (so the new action
+        starts at frame 0) and re-set here on the next call. ``beat_count < 0``
+        (no beats seen yet) holds the controller at frame 0.
+        """
+        if beat_count < 0:
+            self._frame_index = 0
+            return
+        if self._beat_anchor is None:
+            self._beat_anchor = beat_count
+        self._frame_index = beat_count - self._beat_anchor

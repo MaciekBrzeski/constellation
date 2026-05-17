@@ -9,7 +9,8 @@
 #   - installs the bootstrap shell script to /usr/local/bin/
 #   - creates Wants symlinks under /etc/systemd/system/multi-user.target.wants/
 #   - masks userconfig.service (Pi OS first-boot wizard) so headless boot works
-#   - drops a Wi-Fi NetworkManager profile into /etc/NetworkManager/system-connections/
+#   - drops a Wi-Fi NetworkManager profile (worker/standalone only — they join
+#     the brain's access point; the brain hosts its own AP, see scripts/switch/)
 #   - adds the pi user to audio,video,render,input,tty groups
 #
 # Usage (must be root):
@@ -27,8 +28,13 @@
 #
 # Roles:
 #   standalone (default): mic + display on one Pi, current behavior.
-#   brain:                mic-only Pi, broadcasts beats over UDP, no display.
-#   worker:               display-only Pi, listens for beats from a brain Pi.
+#   brain:                mic-only, broadcasts beats over UDP, no display.
+#                         Hosts the Wi-Fi AP — no client profile written; the
+#                         real brain is a Switch OLED (scripts/switch/).
+#   worker:               display-only Pi, joins the brain's AP, listens for
+#                         beats over UDP.
+#
+# --ssid / --psk name the brain's access point (the Switch OLED's SSID).
 
 set -euo pipefail
 
@@ -73,7 +79,11 @@ fi
 [[ $EUID -eq 0 ]] || die "must run as root (use sudo)"
 [[ -n $ROOTFS && -d $ROOTFS ]] || die "--rootfs path missing or not a directory"
 [[ -n $BOOT   && -d $BOOT   ]] || die "--boot path missing or not a directory"
-[[ -n $SSID && -n $PSK ]] || die "need --ssid and --psk"
+# Workers + standalone join the brain's Wi-Fi; the brain hosts its own AP
+# (scripts/switch/setup_ap.sh) so it needs no client SSID/PSK.
+if [[ $ROLE != "brain" ]]; then
+    [[ -n $SSID && -n $PSK ]] || die "need --ssid and --psk (the brain's access point)"
+fi
 [[ -f $BUNDLE ]] || die "bundle not found at $BUNDLE — run scripts/build_pi_bundle.sh first"
 [[ -z $SSH_PUBKEY || -f $SSH_PUBKEY ]] || die "--ssh-pubkey path not a file: $SSH_PUBKEY"
 
@@ -171,7 +181,14 @@ log "masking userconfig.service (Pi OS first-boot wizard)"
 ln -sfn /dev/null "$ROOTFS/etc/systemd/system/userconfig.service"
 
 # ----- Wi-Fi NetworkManager profile
-log "writing Wi-Fi profile for SSID '$SSID'"
+# Workers + standalone join the brain's Wi-Fi — typically the Switch OLED
+# access point (scripts/switch/setup_ap.sh), or any router. The brain hosts
+# its own AP, so it gets no infrastructure client profile.
+if [[ $ROLE == "brain" ]]; then
+    NM_FILE="(none — brain hosts its own AP via scripts/switch/setup_ap.sh)"
+    log "role=brain: skipping Wi-Fi client profile — run scripts/switch/setup_ap.sh on the brain"
+else
+log "writing Wi-Fi profile for SSID '$SSID' (the brain's access point)"
 NM_DIR="$ROOTFS/etc/NetworkManager/system-connections"
 mkdir -p "$NM_DIR"
 NM_FILE="$NM_DIR/constellation-wifi.nmconnection"
@@ -203,6 +220,7 @@ method=auto
 EOF
 chmod 600 "$NM_FILE"
 chown 0:0 "$NM_FILE"
+fi
 
 # ----- enable SSH (Pi OS firstboot trigger + systemd wants symlink belt-and-braces)
 log "enabling sshd"
@@ -265,7 +283,11 @@ case $ROLE in
     brain)      echo "  units:       constellation-master.service + constellation-bootstrap.service" ;;
     worker)     echo "  units:       constellation.service (worker, --remote-beat) + constellation-bootstrap.service" ;;
 esac
-echo "  wifi:        $NM_FILE (mode 600)"
+if [[ $ROLE == "brain" ]]; then
+    echo "  wifi:        $NM_FILE"
+else
+    echo "  wifi:        $NM_FILE (mode 600)"
+fi
 echo "  user:        $PI_USER added to audio,video,render,input,tty"
 echo "  wizard:      userconfig.service masked"
 if [[ -n $SSH_PUBKEY ]]; then

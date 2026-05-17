@@ -1,9 +1,17 @@
 """Beat detection via microphone input.
 
-Hybrid backend: prefers ``aubio.tempo`` (phase-locked autocorrelation tempo
-tracker) for onset firing when the library is available, falling back to
-RMS-spike detection. Energy-tier classification is always RMS-based since
-aubio doesn't expose comparable loudness metrics.
+Selectable onset backend (``backend`` kwarg):
+
+* ``"multiband"`` — numpy spectral-flux detector (band-split, kick-locked
+  tempo), see :mod:`constellation.audio.onset`. Genre-robust, no system deps.
+* ``"aubio"`` — ``aubio.tempo`` phase-locked autocorrelation tracker, used
+  when the library is installed.
+* ``"rms"`` — wideband RMS-spike fallback, always available.
+* ``"auto"`` — aubio if ``use_aubio`` and the lib imports, else multiband,
+  else rms.
+
+Energy-tier classification is always RMS-based regardless of backend, since
+neither the aubio nor the multiband path exposes comparable loudness metrics.
 """
 
 from __future__ import annotations
@@ -11,8 +19,12 @@ from __future__ import annotations
 import collections
 import threading
 import time
+from typing import TYPE_CHECKING
 
 import numpy as np
+
+if TYPE_CHECKING:
+    from constellation.audio.onset import MultibandSpectralFluxDetector
 
 
 class BeatDetector:
@@ -50,6 +62,16 @@ class BeatDetector:
         min_noise_floor: float = 0.002,
         use_aubio: bool = True,
         device: int | str | None = None,
+        backend: str = "auto",
+        fft_size: int = 1024,
+        flux_history_size: int = 43,
+        bass_sensitivity: float = 1.6,
+        mid_sensitivity: float = 1.8,
+        high_sensitivity: float = 2.0,
+        bass_max_hz: float = 250.0,
+        high_min_hz: float = 4000.0,
+        tempo_min_bpm: float = 50.0,
+        tempo_max_bpm: float = 200.0,
     ) -> None:
         self.sensitivity = sensitivity
         self.cooldown_ms = cooldown_ms
@@ -63,6 +85,21 @@ class BeatDetector:
         self._low_intensity_ratio = low_intensity_ratio
         self._high_intensity_ratio = high_intensity_ratio
         self._min_noise_floor = min_noise_floor
+        self._tempo_history_size = tempo_history_size
+
+        # Onset-backend selection + multiband tuning (used in start()).
+        self._backend_choice = backend
+        self._fft_size = fft_size
+        self._flux_history_size = flux_history_size
+        self._bass_sensitivity = bass_sensitivity
+        self._mid_sensitivity = mid_sensitivity
+        self._high_sensitivity = high_sensitivity
+        self._bass_max_hz = bass_max_hz
+        self._high_min_hz = high_min_hz
+        self._tempo_min_bpm = tempo_min_bpm
+        self._tempo_max_bpm = tempo_max_bpm
+        self._onset_backend: MultibandSpectralFluxDetector | None = None
+        self._backend_name = "rms"
 
         self._beat_event = threading.Event()
         self._energy_history: collections.deque[float] = collections.deque(
@@ -98,6 +135,13 @@ class BeatDetector:
 
         self._bpm: float = 0.0
         self._stream = None
+
+        # Authoritative beat counter + epoch for multi-projector sync.
+        # _beat_count: monotonic index of the last fired beat (-1 = none yet).
+        # _epoch: bumped on start() and on a tempo re-lock so worker Pis know
+        # to discard a stale predicted-beat schedule.
+        self._beat_count: int = -1
+        self._epoch: int = 0
 
         # aubio tempo tracker — populated lazily in start() so unit tests and
         # offline replay can construct the detector without the lib.
@@ -162,6 +206,37 @@ class BeatDetector:
         return self._last_beat_audio_ms
 
     @property
+    def last_beat_monotonic_ms(self) -> float:
+        """Wall-clock (``time.monotonic()``) milliseconds of the last beat.
+
+        The common clock the broadcast packet uses to schedule frame flips
+        on the worker Pis — keep it in the same domain as ``brain_ms``.
+        """
+        return self._last_beat_wall_s * 1000.0
+
+    @property
+    def beat_count(self) -> int:
+        """Monotonic index of the last fired beat (-1 before the first)."""
+        return self._beat_count
+
+    @property
+    def epoch(self) -> int:
+        """Sync epoch — bumped on start() and on a tempo re-lock."""
+        return self._epoch
+
+    @property
+    def predicted_next_beat_ms(self) -> float:
+        """Predicted ``time.monotonic()`` ms of the next beat (0.0 if unknown)."""
+        if self._bpm <= 0 or self._beat_count < 0:
+            return 0.0
+        return self._last_beat_wall_s * 1000.0 + 60000.0 / self._bpm
+
+    @property
+    def backend_name(self) -> str:
+        """Resolved onset backend in use: ``'aubio'``, ``'multiband'`` or ``'rms'``."""
+        return self._backend_name
+
+    @property
     def low_intensity_ratio(self) -> float:
         """Intensity below this classifies the energy tier as ``'low'``."""
         return self._low_intensity_ratio
@@ -185,37 +260,47 @@ class BeatDetector:
         block = indata[:, 0].astype(np.float32)
         rms = float(np.sqrt(np.mean(block ** 2)))
 
-        # Phase-locked tempo tracking. aubio.tempo expects exactly hop_size
-        # samples; sounddevice's blocksize is set to match in start(). When
-        # aubio reports a beat the RMS gate is bypassed — aubio has its own
-        # silence handling and is more reliable on sustained music.
-        aubio_beat = False
-        aubio_bpm = 0.0
+        # Run the active onset backend. aubio.tempo and the multiband detector
+        # both expect exactly hop_size / block_size samples; sounddevice's
+        # blocksize is set to match in start(). When the backend reports a
+        # beat the RMS gate is bypassed — the backend has its own silence
+        # handling and is more reliable on sustained music.
+        ext_beat = False
+        ext_bpm = 0.0
         if self._aubio_tempo is not None:
             try:
                 is_beat = self._aubio_tempo(block)
-                aubio_beat = bool(is_beat[0])
-                if aubio_beat:
-                    aubio_bpm = float(self._aubio_tempo.get_bpm())
+                ext_beat = bool(is_beat[0])
+                if ext_beat:
+                    ext_bpm = float(self._aubio_tempo.get_bpm())
             except Exception:
                 # aubio internal error → drop to RMS path for this block.
-                aubio_beat = False
-                aubio_bpm = 0.0
+                ext_beat = False
+                ext_bpm = 0.0
+        elif self._onset_backend is not None:
+            try:
+                result = self._onset_backend.process_block(block)
+                ext_beat = result.beat
+                if ext_beat:
+                    ext_bpm = result.bpm
+            except Exception:
+                ext_beat = False
+                ext_bpm = 0.0
 
-        self._process_energy(rms, aubio_beat=aubio_beat, aubio_bpm=aubio_bpm)
+        self._process_energy(rms, ext_beat=ext_beat, ext_bpm=ext_bpm)
 
     def _process_energy(
         self,
         rms: float,
-        aubio_beat: bool = False,
-        aubio_bpm: float = 0.0,
+        ext_beat: bool = False,
+        ext_bpm: float = 0.0,
     ) -> None:
         """Core onset + tier logic — testable without hardware.
 
-        ``aubio_beat=True`` forces a beat fire (bypassing the RMS gate);
-        used when the aubio path detected an onset. ``aubio_bpm`` is the
-        autocorrelation BPM at fire time and overrides the interval-based
-        estimate when supplied.
+        ``ext_beat=True`` forces a beat fire (bypassing the RMS gate); used
+        when an onset backend (aubio or multiband) detected a beat.
+        ``ext_bpm`` is the backend's tempo estimate at fire time and overrides
+        the interval-based estimate when supplied.
         """
         # Advance audio time by one block.
         self._audio_time_ms += self._block_duration_ms
@@ -259,8 +344,8 @@ class BeatDetector:
             self._audio_time_ms - self._last_beat_audio_ms
         ) >= self.cooldown_ms
 
-        if aubio_beat and cooldown_elapsed:
-            self._fire_beat(rms, ext_bpm=aubio_bpm)
+        if ext_beat and cooldown_elapsed:
+            self._fire_beat(rms, ext_bpm=ext_bpm)
             return
 
         # RMS fallback path — only runs when aubio either didn't fire or is
@@ -288,10 +373,12 @@ class BeatDetector:
             rms / self._noise_floor if self._noise_floor > 0 else 0.0
         )
         self._beat_event.set()
+        self._beat_count += 1
 
         self._beat_audio_times_ms.append(self._audio_time_ms)
-        # Prefer aubio's autocorrelation BPM when supplied (smoother and
+        # Prefer the backend's autocorrelation BPM when supplied (smoother and
         # phase-locked). Fall back to interval-based estimate.
+        prev_bpm = self._bpm
         if ext_bpm > 0:
             self._bpm = ext_bpm
         elif len(self._beat_audio_times_ms) >= 2:
@@ -303,13 +390,74 @@ class BeatDetector:
             if mean_interval_ms > 0:
                 self._bpm = 60000.0 / mean_interval_ms
 
+        # A large tempo change is a re-lock — bump the epoch so worker Pis
+        # drop any predicted-beat schedule built on the old tempo.
+        if (
+            prev_bpm > 0
+            and self._bpm > 0
+            and abs(self._bpm - prev_bpm) / prev_bpm > 0.25
+        ):
+            self._epoch += 1
+
     # ------------------------------------------------------------- lifecycle
+    def _build_backend(self) -> None:
+        """Resolve ``backend`` and construct the onset backend.
+
+        ``"auto"`` → aubio (if ``use_aubio``) else rms. When aubio is selected
+        but not installed, ``"auto"`` falls through to multiband while an
+        explicit ``"aubio"`` choice falls back to rms.
+        """
+        self._aubio_tempo = None
+        self._onset_backend = None
+
+        choice = self._backend_choice
+        if choice == "auto":
+            choice = "aubio" if self._use_aubio else "rms"
+
+        if choice == "aubio":
+            try:
+                import aubio  # type: ignore[import-not-found]
+
+                # win_s = 2 × hop_s is the standard aubio.tempo config; gives
+                # the tracker enough buffer to estimate phase.
+                self._aubio_tempo = aubio.tempo(
+                    "default",
+                    self.block_size * 2,
+                    self.block_size,
+                    self.sample_rate,
+                )
+                self._backend_name = "aubio"
+                return
+            except ImportError:
+                choice = "multiband" if self._backend_choice == "auto" else "rms"
+
+        if choice == "multiband":
+            from constellation.audio.onset import MultibandSpectralFluxDetector
+
+            self._onset_backend = MultibandSpectralFluxDetector(
+                sample_rate=self.sample_rate,
+                block_size=self.block_size,
+                fft_size=self._fft_size,
+                flux_history_size=self._flux_history_size,
+                bass_sensitivity=self._bass_sensitivity,
+                mid_sensitivity=self._mid_sensitivity,
+                high_sensitivity=self._high_sensitivity,
+                bass_max_hz=self._bass_max_hz,
+                high_min_hz=self._high_min_hz,
+                tempo_min_bpm=self._tempo_min_bpm,
+                tempo_max_bpm=self._tempo_max_bpm,
+                tempo_history_size=self._tempo_history_size,
+            )
+            self._backend_name = "multiband"
+            return
+
+        self._backend_name = "rms"
+
     def start(self) -> None:
         """Open the microphone stream and begin listening for beats.
 
-        If aubio is installed and ``use_aubio`` is set, also instantiate
-        ``aubio.tempo`` for phase-locked beat tracking. Falls back silently
-        to the RMS path when aubio isn't available.
+        Constructs the onset backend (see :meth:`_build_backend`) and bumps
+        the sync epoch so worker Pis re-establish their beat schedule.
         """
         try:
             import sounddevice as sd
@@ -325,21 +473,8 @@ class BeatDetector:
                 "sudo apt install libportaudio2"
             ) from exc
 
-        if self._use_aubio:
-            try:
-                import aubio  # type: ignore[import-not-found]
-
-                # win_s = 2 × hop_s is the standard aubio.tempo config; gives
-                # the tracker enough buffer to estimate phase.
-                self._aubio_tempo = aubio.tempo(
-                    "default",
-                    self.block_size * 2,
-                    self.block_size,
-                    self.sample_rate,
-                )
-            except ImportError:
-                # aubio missing → RMS fallback. Don't error.
-                self._aubio_tempo = None
+        self._build_backend()
+        self._epoch += 1
 
         try:
             self._stream = sd.InputStream(
@@ -364,6 +499,7 @@ class BeatDetector:
             self._stream.close()
             self._stream = None
         self._aubio_tempo = None
+        self._onset_backend = None
 
     @property
     def aubio_active(self) -> bool:

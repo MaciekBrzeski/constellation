@@ -5,9 +5,14 @@ from __future__ import annotations
 import argparse
 import socket
 import sys
+import time
 from pathlib import Path
+from typing import TYPE_CHECKING, cast
 
 import pygame
+
+if TYPE_CHECKING:
+    from constellation.audio.network import BeatReceiver
 
 from constellation.animation.controller import AnimationController
 from constellation.animation.timing import FrameClock
@@ -98,6 +103,12 @@ def build_parser() -> argparse.ArgumentParser:
             "Set to a specific IP to bypass broadcast on routed networks."
         ),
     )
+    parser.add_argument(
+        "--debug-sync",
+        action="store_true",
+        default=False,
+        help="Log beat counter / frame index / clock offset (worker mode).",
+    )
     return parser
 
 
@@ -131,21 +142,37 @@ def main(argv: list[str] | None = None) -> None:
             tempo_history_size=audio_cfg.tempo_history_size,
             min_noise_floor=audio_cfg.min_noise_floor,
             use_aubio=audio_cfg.use_aubio,
+            backend=audio_cfg.backend,
+            fft_size=audio_cfg.fft_size,
+            flux_history_size=audio_cfg.flux_history_size,
+            bass_sensitivity=audio_cfg.bass_sensitivity,
+            mid_sensitivity=audio_cfg.mid_sensitivity,
+            high_sensitivity=audio_cfg.high_sensitivity,
+            bass_max_hz=audio_cfg.bass_max_hz,
+            high_min_hz=audio_cfg.high_min_hz,
+            tempo_min_bpm=audio_cfg.tempo_min_bpm,
+            tempo_max_bpm=audio_cfg.tempo_max_bpm,
         )
         beat_detector.start()
-        if beat_detector.aubio_active:
-            print("[audio] aubio tempo tracker active (phase-locked)")
-        else:
-            print("[audio] aubio unavailable, using RMS onset detection")
+        print(f"[audio] {beat_detector.backend_name} onset backend active")
     elif args.remote_beat is not None:
         from constellation.audio.network import BeatReceiver, DEFAULT_PORT
 
         host, _, port_s = args.remote_beat.partition(":")
         port = int(port_s) if port_s else DEFAULT_PORT
         bind_host = host if host else config.network.bind_host
-        beat_detector = BeatReceiver(port=port, bind_host=bind_host)
+        beat_detector = BeatReceiver(
+            port=port,
+            bind_host=bind_host,
+            render_lead_ms=config.network.render_lead_ms,
+            offset_window_size=config.network.offset_window_size,
+        )
         beat_detector.start()
         print(f"[audio] remote beat receiver active on {bind_host}:{port}")
+
+    # Authoritative beat-counter sync applies only to remote (worker) mode.
+    # predictive_sync=False reverts to the legacy advance-on-packet path.
+    remote_sync = args.remote_beat is not None and config.network.predictive_sync
 
     assets_dir = Path(args.assets) if args.assets else Path(config.assets_dir)
     controller = AnimationController(config.animation, assets_dir)
@@ -228,7 +255,33 @@ def main(argv: list[str] | None = None) -> None:
 
         # Advance sprite animation
         dt = clock.tick()
-        if beat_detector is not None:
+        if remote_sync:
+            # Worker mode: the frame index is the brain's authoritative beat
+            # counter, pre-rolled so the flip lands on the beat. Drift- and
+            # packet-loss-proof — a missed packet self-heals on the next one.
+            # remote_sync ⇒ beat_detector is a BeatReceiver (see setup above).
+            receiver = cast("BeatReceiver", beat_detector)
+            frame_idx = receiver.consume_frame_index()
+            if frame_idx is not None:
+                controller.advance_to_beat(frame_idx)
+                beat_pulse = 1.0
+                if args.debug_sync:
+                    print(
+                        f"[sync] beat_count={receiver.beat_count} "
+                        f"frame={controller._frame_index} "
+                        f"offset_ms={receiver.clock_offset_ms:.1f}",
+                        flush=True,
+                    )
+            elif time.monotonic() - receiver.last_beat_time > 2.0:
+                # No packets from the brain — free-run the idle animation so
+                # the deer isn't frozen. While the brain is up but the room
+                # is quiet, hold on the scheduler index instead, keeping the
+                # two workers phase-locked.
+                sprite_accumulator += dt
+                while sprite_accumulator >= idle_tick_interval:
+                    sprite_accumulator -= idle_tick_interval
+                    controller.advance_frame()
+        elif beat_detector is not None:
             if beat_detector.beat_event.is_set():
                 # Beat-driven: advance frame on each detected beat
                 beat_detector.beat_event.clear()

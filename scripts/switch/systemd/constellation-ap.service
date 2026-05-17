@@ -1,0 +1,19 @@
+[Unit]
+Description=Constellation brain Wi-Fi access point (static IP + hostapd/dnsmasq)
+# The AP must exist before the beat broadcaster binds its socket.
+Before=constellation-master.service
+Wants=hostapd.service dnsmasq.service
+After=network-pre.target
+DefaultDependencies=no
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# @IFACE@ / @ADDRESS@ are substituted by scripts/switch/setup_ap.sh.
+# `-` prefix: tolerate "address already exists" on a restart.
+ExecStart=-/sbin/ip addr add @ADDRESS@/24 dev @IFACE@
+ExecStart=/sbin/ip link set @IFACE@ up
+ExecStop=-/sbin/ip addr flush dev @IFACE@
+
+[Install]
+WantedBy=multi-user.target

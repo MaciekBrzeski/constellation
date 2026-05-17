@@ -7,10 +7,10 @@ drop-in replacement for ``BeatDetector`` that exposes the same surface
 ``last_beat_strength``, ``bpm``, ``aubio_active``) so
 ``AudioReactiveBehavior`` and ``cli/run.py`` work unchanged.
 
-Wire format: JSON, one packet per audio block, ~120 bytes each. Sent
-to a UDP broadcast address. No clock-sync required — the broadcaster's
-audio clock is the only timeline that matters; receivers just dedupe
-on monotonic ``ts_ms``.
+Wire format: JSON, ~50 Hz, ~200 bytes each, sent to a UDP broadcast
+address. Every packet carries an authoritative ``beat_count`` and the
+brain's ``brain_ms`` clock so workers can frame-lock and predict the next
+beat — see :class:`~constellation.audio.sync.BeatScheduler`.
 """
 
 from __future__ import annotations
@@ -20,6 +20,8 @@ import socket
 import threading
 import time
 from typing import Any
+
+from constellation.audio.sync import BeatScheduler
 
 DEFAULT_PORT = 49500
 DEFAULT_BROADCAST_HOST = "255.255.255.255"
@@ -62,15 +64,31 @@ class BeatBroadcaster:
             beat = self._detector.beat_event.is_set()
             if beat:
                 self._detector.beat_event.clear()
+            now_brain_ms = time.monotonic() * 1000.0
+            bpm = float(self._detector.bpm)
+            # New sync fields read via getattr so a detector predating them
+            # (or a test fake) still broadcasts — receivers tolerate the
+            # defaults. beat_count/brain_ms ride every packet so a worker that
+            # missed the beat packet self-heals from the next state packet.
             payload = {
                 "seq": self._seq,
                 "ts_ms": float(self._detector.last_beat_audio_ms)
                 if beat
-                else time.monotonic() * 1000.0,
+                else now_brain_ms,
                 "tier": self._detector.energy_tier,
-                "bpm": float(self._detector.bpm),
+                "bpm": bpm,
                 "beat": beat,
                 "strength": float(self._detector.last_beat_strength) if beat else 0.0,
+                "brain_ms": now_brain_ms,
+                "beat_count": int(getattr(self._detector, "beat_count", -1)),
+                "beat_brain_ms": float(
+                    getattr(self._detector, "last_beat_monotonic_ms", 0.0)
+                ),
+                "next_beat_brain_ms": float(
+                    getattr(self._detector, "predicted_next_beat_ms", 0.0)
+                ),
+                "interval_ms": 60000.0 / bpm if bpm > 0 else 0.0,
+                "epoch": int(getattr(self._detector, "epoch", 0)),
             }
             self._seq += 1
             try:
@@ -106,6 +124,8 @@ class BeatReceiver:
         port: int = DEFAULT_PORT,
         bind_host: str = "0.0.0.0",
         recv_timeout_s: float = 0.5,
+        render_lead_ms: float = 16.0,
+        offset_window_size: int = 64,
         **_unused: object,
     ) -> None:
         self._port = port
@@ -118,6 +138,13 @@ class BeatReceiver:
         self._last_beat_audio_ms = 0.0
         self._last_beat_strength = 0.0
         self._last_packet_ts = 0.0
+
+        # Authoritative frame-index sync — see BeatScheduler.
+        self._scheduler = BeatScheduler(
+            render_lead_ms=render_lead_ms,
+            offset_window_size=offset_window_size,
+        )
+        self._last_consumed_index = -1
 
         self._sock: socket.socket | None = None
         self._stop = threading.Event()
@@ -152,6 +179,34 @@ class BeatReceiver:
     def aubio_active(self) -> bool:
         return False
 
+    @property
+    def beat_count(self) -> int:
+        """Authoritative beat index from the scheduler (-1 before any beat)."""
+        return self._scheduler.count
+
+    @property
+    def epoch(self) -> int:
+        """Sync epoch last seen from the brain."""
+        return self._scheduler.epoch
+
+    @property
+    def clock_offset_ms(self) -> float:
+        """Estimated brain→local clock offset (for --debug-sync)."""
+        return self._scheduler.clock_offset_ms
+
+    def consume_frame_index(self) -> int | None:
+        """Authoritative frame index when it advanced since the last call.
+
+        Returns the new absolute beat index when the scheduler stepped
+        forward (a beat boundary was crossed), else ``None``. Poll once per
+        render frame from the main thread.
+        """
+        idx = self._scheduler.poll(time.monotonic() * 1000.0)
+        if idx != self._last_consumed_index:
+            self._last_consumed_index = idx
+            return idx
+        return None
+
     # ------------------------------------------------------------- lifecycle
     def start(self) -> None:
         self._sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -182,6 +237,7 @@ class BeatReceiver:
             return
         if not isinstance(msg, dict):
             return
+        self._scheduler.feed(msg, time.monotonic() * 1000.0)
         tier = msg.get("tier")
         if isinstance(tier, str):
             self._tier = tier
