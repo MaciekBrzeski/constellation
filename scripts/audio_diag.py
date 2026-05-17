@@ -57,6 +57,8 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument("--cooldown-ms", type=float, default=None)
     ap.add_argument("--noise-gate", type=float, default=None)
     ap.add_argument("--history-size", type=int, default=None)
+    ap.add_argument("--backend", choices=["rms", "multiband"], default="rms",
+                    help="onset backend to replay through (default: rms)")
     args = ap.parse_args(argv)
 
     if args.wav is None:
@@ -73,7 +75,7 @@ def main(argv: list[str] | None = None) -> None:
     if args.noise_gate is not None: cfg = _replace(cfg, noise_gate=args.noise_gate)
     if args.history_size is not None: cfg = _replace(cfg, history_size=args.history_size)
 
-    events = analyse(audio, sr, cfg)
+    events = analyse(audio, sr, cfg, backend=args.backend)
     report = build_report(events, duration_s=len(audio) / sr, cfg=cfg)
     print(format_summary(report, cfg, suggest(report, cfg)))
     if args.csv:

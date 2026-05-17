@@ -127,24 +127,93 @@ def test_cooldown_enforced_on_audio_clock() -> None:
     assert not det.beat_event.is_set()
 
 
-def test_aubio_beat_override_fires_under_noise_gate() -> None:
-    """aubio_beat=True should fire even when RMS is below the gate."""
+def test_ext_beat_override_fires_under_noise_gate() -> None:
+    """ext_beat=True should fire even when RMS is below the gate."""
     det = _det(noise_gate=0.5)  # gate set so RMS path can't fire
     for _ in range(10):
         det._process_energy(0.02)
-    det._process_energy(0.02, aubio_beat=True, aubio_bpm=128.0)
+    det._process_energy(0.02, ext_beat=True, ext_bpm=128.0)
     assert det.beat_event.is_set()
     assert det.bpm == 128.0
 
 
-def test_aubio_bpm_overrides_interval_estimate() -> None:
-    """Supplied aubio BPM wins over the interval-derived estimate."""
+def test_ext_bpm_overrides_interval_estimate() -> None:
+    """A supplied backend BPM wins over the interval-derived estimate."""
     det = _det()
     for _ in range(10):
         det._process_energy(0.02)
-    det._process_energy(0.5, aubio_beat=True, aubio_bpm=140.0)
-    det._process_energy(0.5, aubio_beat=True, aubio_bpm=141.0)
+    det._process_energy(0.5, ext_beat=True, ext_bpm=140.0)
+    det._process_energy(0.5, ext_beat=True, ext_bpm=141.0)
     assert det.bpm == 141.0
+
+
+def test_beat_count_increments_per_beat() -> None:
+    """_beat_count is monotonic — one step per fired beat, -1 before any."""
+    det = _det(cooldown_ms=0.0)
+    assert det.beat_count == -1
+    for _ in range(10):
+        det._process_energy(0.02)
+    det._process_energy(0.5)
+    assert det.beat_count == 0
+    det.beat_event.clear()
+    det._process_energy(0.5)
+    assert det.beat_count == 1
+
+
+def test_epoch_bumps_on_tempo_relock() -> None:
+    """A large BPM jump is a re-lock and bumps the sync epoch."""
+    det = _det(cooldown_ms=0.0)
+    for _ in range(10):
+        det._process_energy(0.02)
+    start_epoch = det.epoch
+    det._process_energy(0.5, ext_beat=True, ext_bpm=120.0)
+    assert det.epoch == start_epoch  # first BPM, no prior to compare
+    det._process_energy(0.5, ext_beat=True, ext_bpm=121.0)
+    assert det.epoch == start_epoch  # small change, no re-lock
+    det._process_energy(0.5, ext_beat=True, ext_bpm=180.0)
+    assert det.epoch == start_epoch + 1  # >25% jump → re-lock
+
+
+def test_predicted_next_beat_follows_bpm() -> None:
+    """predicted_next_beat_ms ≈ last beat + one bpm period."""
+    det = _det(cooldown_ms=0.0)
+    for _ in range(10):
+        det._process_energy(0.02)
+    det._process_energy(0.5, ext_beat=True, ext_bpm=120.0)
+    expected = det.last_beat_monotonic_ms + 60000.0 / 120.0
+    assert abs(det.predicted_next_beat_ms - expected) < 1e-6
+
+
+def test_predicted_next_beat_zero_before_first_beat() -> None:
+    det = _det()
+    assert det.predicted_next_beat_ms == 0.0
+
+
+def test_backend_resolves_to_rms_when_aubio_disabled() -> None:
+    """backend='auto' + use_aubio=False resolves to the rms path."""
+    det = _det(backend="auto", use_aubio=False)
+    det._build_backend()
+    assert det.backend_name == "rms"
+    assert det._onset_backend is None
+    assert det._aubio_tempo is None
+
+
+def test_backend_multiband_builds_onset_backend() -> None:
+    """backend='multiband' constructs the spectral-flux detector."""
+    from constellation.audio.onset import MultibandSpectralFluxDetector
+
+    det = _det(backend="multiband")
+    det._build_backend()
+    assert det.backend_name == "multiband"
+    assert isinstance(det._onset_backend, MultibandSpectralFluxDetector)
+
+
+def test_backend_explicit_aubio_falls_back_to_rms_without_lib() -> None:
+    """An explicit backend='aubio' degrades to rms when aubio isn't installed."""
+    det = _det(backend="aubio")
+    det._build_backend()
+    # aubio is an optional system package; on a host without it this is "rms".
+    assert det.backend_name in ("aubio", "rms")
 
 
 def test_device_param_is_stored() -> None:

@@ -83,6 +83,20 @@ class AudioConfig:
     # Input device name for the capture stream. ``None`` = system default.
     # Stores the device *name* (not index) — indices shift across re-plug.
     device: str | None = None
+    # Onset backend: "auto" | "aubio" | "rms" | "multiband". "auto" resolves
+    # via use_aubio (aubio→multiband→rms when True, rms when False).
+    backend: str = "auto"
+    # Multiband spectral-flux detector tuning. The *_sensitivity values are
+    # the std-multiplier k in the per-band threshold median + k·std.
+    fft_size: int = 1024
+    flux_history_size: int = 43
+    bass_sensitivity: float = 3.0
+    mid_sensitivity: float = 4.0
+    high_sensitivity: float = 4.0
+    bass_max_hz: float = 250.0
+    high_min_hz: float = 4000.0
+    tempo_min_bpm: float = 50.0
+    tempo_max_bpm: float = 200.0
 
 
 @dataclass(frozen=True)
@@ -91,6 +105,20 @@ class NetworkConfig:
     broadcast_host: str = "255.255.255.255"
     bind_host: str = "0.0.0.0"
     port: int = 49500
+    # WiFi access point — the brain (Switch OLED) hosts its own SSID so the
+    # install is router-less. Consumed by scripts/switch/setup_ap.sh; kept in
+    # config so the topology is documented in one place.
+    ap_mode: bool = False
+    ap_ssid: str = "constellation"
+    ap_interface: str = "wlan0"
+    ap_address: str = "192.168.50.1"
+    # Worker-side beat-sync tuning.
+    # render_lead_ms: pre-roll so a frame flip lands on the beat instant.
+    # offset_window_size: rolling-min window for brain→local clock offset.
+    # predictive_sync: False reverts to the legacy advance-by-1-on-packet path.
+    render_lead_ms: float = 16.0
+    offset_window_size: int = 64
+    predictive_sync: bool = True
 
 
 @dataclass(frozen=True)

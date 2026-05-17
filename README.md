@@ -41,15 +41,17 @@ Pygame loop:
   data, supports linear tweening between adjacent frames.
 - `BeatDetector` (background `sounddevice` thread) tracks an adaptive
   noise floor (p10 of recent block RMS) for energy-tier classification,
-  then fires beat events via one of two backends:
-  - **aubio** (preferred) — `aubio.tempo` autocorrelation tempo tracker,
-    phase-locked so subsequent beats land on-beat instead of trailing the
-    kick. BPM comes from aubio's autocorrelation estimate.
-  - **RMS fallback** — instantaneous RMS > rolling mean × sensitivity past
-    cooldown. BPM derived from inter-beat intervals on an audio clock.
+  then fires beat events via a selectable onset backend (`[audio] backend`):
+  - **multiband** (default) — numpy spectral-flux detector: splits each
+    block into bass / mid / high bands, fires on per-band onsets against a
+    `median + k·std` adaptive threshold, and locks tempo to the bass (kick)
+    band. Genre-robust, no system packages — see `audio/onset.py`.
+  - **aubio** — `aubio.tempo` autocorrelation tracker, phase-locked. Used
+    when `backend = "aubio"` (or `"auto"`) and the library is installed.
+  - **rms** — instantaneous RMS > rolling mean × sensitivity past cooldown.
+    Always-available fallback.
 
-  The aubio path is used whenever the library imports successfully; falls
-  back silently otherwise.
+  `backend = "auto"` resolves to aubio (if installed) → multiband → rms.
 - `AudioReactiveBehavior` maps energy tier → action set
   (`low → idle/eating`, `medium → walk/alert`, `high → run/jump`). A
   strong-beat lockout (`strong_beat_threshold`, `strong_hold_sec`) holds
@@ -169,51 +171,69 @@ once with `sudo passwd pi` before SSH will accept you. From Android,
 4. `constellation.service` launches the deer fullscreen via `kmsdrm` SDL
    driver. Restarts on failure. Logs to journal.
 
-### Multi-projector setup (brain Pi + worker Pis)
+### Multi-projector setup (Switch OLED brain + worker Pis)
 
-Scaling beyond one projector: a dedicated **brain Pi** (mic only, no
-HDMI) detects beats and broadcasts them over UDP on the local Wi-Fi.
-Each **worker Pi** drives one projector and listens to the brain
-instead of opening its own mic — so every animal advances frames on the
-same beat, but each picks its own action so the projectors show
-visually distinct content.
+Scaling beyond one projector: a **brain** — a modded Nintendo Switch OLED
+running Linux — captures audio, detects beats, and broadcasts them over
+Wi-Fi. Each **worker Pi** drives one projector and listens to the brain
+instead of opening its own mic. The workers stay **frame-locked**: every
+packet carries an authoritative beat counter, so the two deer show the
+same animation frame even across dropped UDP packets, and a predictive
+scheduler pre-rolls each flip so it lands on the beat. Each worker still
+picks its own action, so the projectors show distinct content.
 
-Three roles: `standalone` (default — mic + display, current behavior),
-`brain` (mic only), `worker` (display only, network-driven).
+The brain also **hosts the Wi-Fi network** (`scripts/switch/setup_ap.sh`),
+so the install is self-contained — no external router.
 
-Provision one card per role:
+Three roles: `standalone` (default — mic + display), `brain` (mic only,
+hosts the AP), `worker` (display only, network-driven).
+
+**1. Set up the brain (Switch OLED).** On the Switch — clone the repo, then:
 
 ```
-# Brain Pi (no display, mic only)
-sudo bash scripts/sd_provision.sh \
-    --rootfs /run/media/$USER/rootfs --boot /run/media/$USER/bootfs \
-    --ssid 'MyNetwork' --psk 'mypassword' \
-    --role brain
+bash scripts/switch/install.sh                                       # runtime + deps
+sudo bash scripts/switch/setup_ap.sh --ssid constellation --psk 'a-good-password'  # Wi-Fi AP
+sudo systemctl enable --now constellation-master.service             # autostart the brain
+```
 
-# Worker Pi A — deer on projector 1
+`install.sh` installs the no-display brain runtime (numpy + sounddevice,
+no OpenCV/pygame). `setup_ap.sh` brings up an AP at `192.168.50.1`; workers
+DHCP into `192.168.50.50–150`. **See `scripts/switch/README.md` for the full
+flow** — OS assumptions, USB-mic setup, the USB-dongle fallback if the
+onboard chip lacks AP mode, and verification.
+
+**2. Provision one worker SD card per projector**, pointing `--ssid`/`--psk`
+at the Switch's access point:
+
+```
+# Worker Pi A — male deer on projector 1
 sudo bash scripts/sd_provision.sh \
     --rootfs /run/media/$USER/rootfs --boot /run/media/$USER/bootfs \
-    --ssid 'MyNetwork' --psk 'mypassword' \
+    --ssid constellation --psk 'a-good-password' \
     --role worker --animal deer_male
 
-# Worker Pi B — wolf on projector 2
+# Worker Pi B — female deer on projector 2
 sudo bash scripts/sd_provision.sh \
     --rootfs /run/media/$USER/rootfs --boot /run/media/$USER/bootfs \
-    --ssid 'MyNetwork' --psk 'mypassword' \
-    --role worker --animal wolf
+    --ssid constellation --psk 'a-good-password' \
+    --role worker --animal deer_female
 ```
 
-All three Pis must be on the same Wi-Fi SSID. The brain broadcasts to
-`255.255.255.255:49500`; workers bind `0.0.0.0:49500` by default.
-Override with `--master HOST:PORT` on the worker provisioner if you
-want to point at a specific brain IP instead of relying on broadcast.
+All three devices share the Switch's SSID. The brain broadcasts to
+`255.255.255.255:49500`; workers bind `0.0.0.0:49500`. Override with
+`--master HOST:PORT` on the worker provisioner to target a specific
+brain IP instead of relying on broadcast.
+
+(A Pi can also run `--role brain` for a router-free Pi-only rig — it then
+hosts the AP via `setup_ap.sh` and `sd_provision.sh` writes no client
+Wi-Fi profile for it.)
 
 Verification:
 
 ```
-# On the brain Pi
+# On the brain
 journalctl -u constellation-master.service -f
-# Expect: [master] aubio tempo tracker active (phase-locked)
+# Expect: [master] multiband onset backend active
 #         [master] broadcasting beats to 255.255.255.255:49500
 #         [master] beat tier=high bpm=128.0 strength=4.20
 
@@ -222,16 +242,17 @@ journalctl -u constellation.service -f
 # Expect: [audio] remote beat receiver active on 0.0.0.0:49500
 ```
 
-Smoke test on a single dev host (3 terminals, no Pis):
+Smoke test on a single dev host (3 terminals, no Switch/Pis):
 
 ```
 constellation-master --host 127.0.0.1
-constellation-run --remote-beat 127.0.0.1:49500 --animal deer_male  --mode windowed --master-host 127.0.0.1
-constellation-run --remote-beat 127.0.0.1:49500 --animal deer_female --mode windowed --master-host 127.0.0.1
+constellation-run --remote-beat 127.0.0.1:49500 --animal deer_male   --mode windowed --master-host 127.0.0.1 --debug-sync
+constellation-run --remote-beat 127.0.0.1:49500 --animal deer_female --mode windowed --master-host 127.0.0.1 --debug-sync
 ```
 
-Clap or play music near the mic — both windows should advance frames
-together, but each should pick its own action.
+Clap or play music near the mic — both windows advance frames together,
+each picking its own action. `--debug-sync` logs `beat_count` / frame
+index / clock offset; the two workers' `beat_count` must match.
 
 ### Browser control dashboard
 
@@ -375,7 +396,9 @@ Knobs in `[audio]` of `config/default.toml`:
 | `strong_beat_threshold` | beat_strength ≥ this → force `high` tier |
 | `strong_hold_sec` | how long a strong beat locks the high tier |
 | `silence_timeout_sec` | retained as kwarg for back-compat (not used) |
-| `use_aubio` | toggle the aubio tempo tracker (defaults to `true`) |
+| `backend` | onset backend: `multiband` (default) / `aubio` / `rms` / `auto` |
+| `bass_sensitivity` / `mid_` / `high_` | multiband per-band threshold k (in `median + k·std`) |
+| `use_aubio` | legacy aubio toggle — consulted only when `backend = "auto"` |
 
 ## Gotchas
 

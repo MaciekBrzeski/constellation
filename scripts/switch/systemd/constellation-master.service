@@ -1,0 +1,22 @@
+[Unit]
+Description=Constellation audio brain (UDP beat broadcaster + web dashboard)
+After=network-online.target sound.target
+Wants=network-online.target
+# constellation-ap.service (installed by setup_ap.sh on the hostapd backend)
+# orders itself Before= this unit, so the AP is up first when present.
+
+[Service]
+Type=simple
+# @USER@ and @WORKDIR@ are substituted by scripts/switch/install.sh.
+User=@USER@
+SupplementaryGroups=audio
+WorkingDirectory=@WORKDIR@
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/usr/bin/python3 -m constellation.cli.master --config config/default.toml --gui --web-host 0.0.0.0 --web-port 8000
+Restart=on-failure
+RestartSec=3
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

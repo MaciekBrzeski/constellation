@@ -92,18 +92,25 @@ def main(argv: list[str] | None = None) -> None:
         tempo_history_size=audio_cfg.tempo_history_size,
         min_noise_floor=audio_cfg.min_noise_floor,
         use_aubio=audio_cfg.use_aubio,
+        backend=audio_cfg.backend,
+        fft_size=audio_cfg.fft_size,
+        flux_history_size=audio_cfg.flux_history_size,
+        bass_sensitivity=audio_cfg.bass_sensitivity,
+        mid_sensitivity=audio_cfg.mid_sensitivity,
+        high_sensitivity=audio_cfg.high_sensitivity,
+        bass_max_hz=audio_cfg.bass_max_hz,
+        high_min_hz=audio_cfg.high_min_hz,
+        tempo_min_bpm=audio_cfg.tempo_min_bpm,
+        tempo_max_bpm=audio_cfg.tempo_max_bpm,
     )
     broadcaster = BeatBroadcaster(detector, host=host, port=port)
     broadcaster.start()
     control = ControlChannel()
     control.start()
 
-    if detector.aubio_active:
-        print("[master] aubio tempo tracker active (phase-locked)")
-    else:
-        print("[master] aubio unavailable, using RMS onset detection")
+    print(f"[master] {detector.backend_name} onset backend active")
     print(f"[master] broadcasting beats to {host}:{port}")
-    print(f"[master] control plane listening for heartbeats on port 49501")
+    print("[master] control plane listening for heartbeats on port 49501")
 
     stop_signal = {"stop": False}
 
