@@ -17,6 +17,7 @@ echo "[build] copying runtime source (no cv2/PIL)"
 cp src/constellation/__init__.py      "$OUT_DIR/constellation/"
 cp src/constellation/__main__.py      "$OUT_DIR/constellation/"
 cp src/constellation/config.py        "$OUT_DIR/constellation/"
+cp src/constellation/netmode.py       "$OUT_DIR/constellation/"
 
 # Subpackages that don't need cv2/PIL
 for sub in animation audio geometry rendering control web; do

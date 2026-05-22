@@ -241,3 +241,33 @@ def test_list_input_devices_never_raises() -> None:
     assert isinstance(result, list)
     assert all(isinstance(idx, int) and isinstance(name, str)
                for idx, name in result)
+
+
+def test_band_flux_defaults_to_zero() -> None:
+    det = _det()
+    assert det.band_flux == {"bass": 0.0, "mid": 0.0, "high": 0.0}
+
+
+def test_band_flux_returns_a_copy() -> None:
+    det = _det()
+    snapshot = det.band_flux
+    snapshot["bass"] = 999.0  # mutate the snapshot
+    assert det.band_flux["bass"] == 0.0  # detector state untouched
+
+
+def test_multiband_backend_populates_band_flux() -> None:
+    """Audio through the multiband backend fills band_flux off the OnsetResult."""
+    import numpy as np
+
+    det = _det(backend="multiband")
+    det._build_backend()
+    assert det.backend_name == "multiband"
+
+    rng = np.random.default_rng(0)
+    for _ in range(40):
+        block = (0.5 * rng.standard_normal((1024, 1))).astype(np.float32)
+        det._audio_callback(block, 1024, None, None)
+
+    flux = det.band_flux
+    assert set(flux) == {"bass", "mid", "high"}
+    assert any(v > 0.0 for v in flux.values())

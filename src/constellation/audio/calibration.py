@@ -24,6 +24,15 @@ from constellation.config import AudioConfig
 # Strength thresholds reported in the per-beat histogram.
 _STRENGTH_THRESHOLDS = (2.0, 2.5, 3.0, 4.0)
 
+# Baseline (room-tone) calibration margins. The gate must sit above genuine
+# background noise so silence never trips it; the adaptive-floor clamp tracks
+# the typical room level.
+_GATE_FROM_P95 = 1.5
+_GATE_FROM_P99 = 1.2
+_FLOOR_FROM_P50 = 1.0
+_MIN_GATE = 0.001
+_MIN_FLOOR = 0.0005
+
 
 @dataclass
 class Event:
@@ -73,8 +82,93 @@ class CalibrationReport:
     events: list[Event] = field(default_factory=list)
 
 
+@dataclass
+class BaselineReport:
+    """RMS distribution of a music-free room-tone recording.
+
+    Used to set ``noise_gate`` (the hard silence gate) and ``min_noise_floor``
+    (the lower clamp on the detector's adaptive floor) from genuine background
+    noise rather than from the quiet passages of a music sample.
+    """
+
+    duration_s: float
+    blocks: int
+    rms_min: float
+    rms_p50: float
+    rms_p90: float
+    rms_p95: float
+    rms_p99: float
+    rms_max: float
+
+
 def _pct(xs: list[float], q: float) -> float:
     return float(np.percentile(xs, q)) if xs else 0.0
+
+
+def measure_baseline(
+    audio: np.ndarray, sample_rate: int, cfg: AudioConfig
+) -> BaselineReport:
+    """Reduce a room-tone (no music) recording to an RMS distribution.
+
+    Splits ``audio`` into ``cfg.block_size`` blocks — the same granularity the
+    live detector sees — and summarises their RMS spread.
+    """
+    block_size = cfg.block_size
+    n_blocks = len(audio) // block_size
+    rms = [
+        float(np.sqrt(np.mean(audio[i * block_size : (i + 1) * block_size] ** 2)))
+        for i in range(n_blocks)
+    ]
+    return BaselineReport(
+        duration_s=len(audio) / max(sample_rate, 1),
+        blocks=n_blocks,
+        rms_min=min(rms) if rms else 0.0,
+        rms_p50=_pct(rms, 50),
+        rms_p90=_pct(rms, 90),
+        rms_p95=_pct(rms, 95),
+        rms_p99=_pct(rms, 99),
+        rms_max=max(rms) if rms else 0.0,
+    )
+
+
+def suggest_from_baseline(report: BaselineReport) -> dict[str, float]:
+    """Recommend ``noise_gate`` and ``min_noise_floor`` from room tone.
+
+    ``noise_gate`` clears even the loudest background blip; ``min_noise_floor``
+    keeps the adaptive floor anchored at the typical room level.
+    """
+    gate = max(
+        _MIN_GATE,
+        report.rms_p95 * _GATE_FROM_P95,
+        report.rms_p99 * _GATE_FROM_P99,
+    )
+    floor = max(_MIN_FLOOR, report.rms_p50 * _FLOOR_FROM_P50)
+    return {"noise_gate": gate, "min_noise_floor": floor}
+
+
+def format_baseline_summary(
+    report: BaselineReport, cfg: AudioConfig, suggestions: dict[str, float]
+) -> str:
+    """Render the human-readable baseline summary for the GUI text box."""
+    lines: list[str] = [
+        "",
+        f"=== Background noise ({report.duration_s:.1f}s, {report.blocks} blocks) ===",
+        f"  min   {report.rms_min:.4f}",
+        f"  p50   {report.rms_p50:.4f}",
+        f"  p90   {report.rms_p90:.4f}",
+        f"  p95   {report.rms_p95:.4f}",
+        f"  p99   {report.rms_p99:.4f}",
+        f"  max   {report.rms_max:.4f}",
+        "",
+        "=== Suggestions ===",
+        f"  noise_gate       current {cfg.noise_gate:.4f}  "
+        f"→ {suggestions['noise_gate']:.4f}",
+        f"  min_noise_floor  current {cfg.min_noise_floor:.4f}  "
+        f"→ {suggestions['min_noise_floor']:.4f}",
+        "",
+        "Apply, then run a music pass to tune sensitivity.",
+    ]
+    return "\n".join(lines)
 
 
 def record(
@@ -255,16 +349,25 @@ def build_report(
     )
 
 
-def suggest(report: CalibrationReport, cfg: AudioConfig) -> dict[str, float]:
+def suggest(
+    report: CalibrationReport,
+    cfg: AudioConfig,
+    *,
+    have_baseline: bool = False,
+) -> dict[str, float]:
     """Recommend detector tweaks. Only includes a key when it should change.
 
     - ``noise_gate``: ~1.5 × the p10 RMS, when meaningfully off the current.
+      Skipped when ``have_baseline`` is set — a dedicated room-tone pass
+      (:func:`measure_baseline`) owns the gate, and music-pass p10 is the
+      quiet part of the song, not true silence.
     - ``sensitivity``: lowered if almost nothing fires, raised if too much does.
     """
     out: dict[str, float] = {}
-    suggested_gate = max(0.001, report.rms_p10 * 1.5)
-    if suggested_gate < cfg.noise_gate * 0.5 or suggested_gate > cfg.noise_gate * 2:
-        out["noise_gate"] = suggested_gate
+    if not have_baseline:
+        suggested_gate = max(0.001, report.rms_p10 * 1.5)
+        if suggested_gate < cfg.noise_gate * 0.5 or suggested_gate > cfg.noise_gate * 2:
+            out["noise_gate"] = suggested_gate
     if report.beat_rate_hz < 0.5:
         out["sensitivity"] = cfg.sensitivity * 0.8
     elif report.beat_rate_hz > 4.0:

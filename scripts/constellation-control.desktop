@@ -3,5 +3,6 @@ Type=Application
 Name=Constellation Control
 Comment=Native control panel for the constellation audio brain
 Exec=/home/maciej/constellation/scripts/start-control.sh
+Icon=multimedia-volume-control
 Terminal=true
 Categories=AudioVideo;Audio;

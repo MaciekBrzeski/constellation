@@ -89,16 +89,31 @@ def test_fallback_when_action_missing_from_animal() -> None:
     assert True
 
 
-def test_strong_beat_overrides_tier_to_high() -> None:
+def test_strong_beat_escalates_one_tier() -> None:
+    # A strong beat escalates ONE tier above the sustained energy tier —
+    # low → medium, not straight to high.
+    actions = ("idle", "eating", "walk", "alert", "run", "jump")
+
     beat = _FakeBeat(tier="low", bpm=120.0)
     beat.last_beat_audio_ms = 1000.0  # new beat
     beat.last_beat_strength = 5.0     # strong
-    ctrl = _FakeController(("idle", "eating", "walk", "alert", "run", "jump"))
+    ctrl = _FakeController(actions)
     b = AudioReactiveBehavior(
         beat_detector=beat, controller=ctrl, strong_beat_threshold=4.0
     )
     b.update()
-    assert ctrl.set_action_calls[-1] in TIER_ACTIONS["high"]
+    assert ctrl.set_action_calls[-1] in TIER_ACTIONS["medium"]
+
+    # medium + strong kick → high
+    beat2 = _FakeBeat(tier="medium", bpm=120.0)
+    beat2.last_beat_audio_ms = 1000.0
+    beat2.last_beat_strength = 5.0
+    ctrl2 = _FakeController(actions)
+    b2 = AudioReactiveBehavior(
+        beat_detector=beat2, controller=ctrl2, strong_beat_threshold=4.0
+    )
+    b2.update()
+    assert ctrl2.set_action_calls[-1] in TIER_ACTIONS["high"]
 
 
 def test_weak_beat_leaves_tier_alone() -> None:
@@ -142,8 +157,8 @@ def test_strong_beat_lockout_prevents_immediate_revert() -> None:
         strong_beat_threshold=4.0,
         strong_hold_sec=10.0,  # long hold so the test doesn't race
     )
-    b.update()  # strong beat → picks from high pool
-    assert ctrl.set_action_calls[-1] in TIER_ACTIONS["high"]
+    b.update()  # strong beat at low tier → escalates one tier to medium
+    assert ctrl.set_action_calls[-1] in TIER_ACTIONS["medium"]
     n = len(ctrl.set_action_calls)
 
     # Next frame — tier is still "low" but lockout must prevent downgrade.
@@ -152,10 +167,10 @@ def test_strong_beat_lockout_prevents_immediate_revert() -> None:
     assert len(ctrl.set_action_calls) == n
 
 
-def test_strong_beat_does_not_cycle_run_jump_every_hit() -> None:
+def test_strong_beat_does_not_re_pick_every_hit() -> None:
     """Successive strong beats extend lockout but don't re-pick."""
     beat = _FakeBeat(tier="low", bpm=120.0)
-    ctrl = _FakeController(("idle", "run", "jump"))
+    ctrl = _FakeController(("idle", "walk", "alert", "run", "jump"))
     b = AudioReactiveBehavior(
         beat_detector=beat,
         controller=ctrl,
@@ -166,9 +181,9 @@ def test_strong_beat_does_not_cycle_run_jump_every_hit() -> None:
         beat.last_beat_audio_ms = 1000.0 + i * 200  # new beats every 200ms
         beat.last_beat_strength = 5.0
         b.update()
-    # Only the first strong beat should have called set_action.
+    # Only the first strong beat should have called set_action (low→medium).
     assert len(ctrl.set_action_calls) == 1
-    assert ctrl.set_action_calls[0] in TIER_ACTIONS["high"]
+    assert ctrl.set_action_calls[0] in TIER_ACTIONS["medium"]
 
 
 def test_stale_silence_timeout_kwarg_accepted() -> None:

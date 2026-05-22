@@ -23,7 +23,8 @@ class _FakeDetector:
     sensitivity = 1.5
     noise_floor = 0.003
     tier_intensity = 8.0
-    aubio_active = True
+    backend_name = "multiband"
+    band_flux = {"bass": 2.0, "mid": 1.0, "high": 0.5}
 
 
 class _FakeChannel(ControlChannel):
@@ -119,3 +120,48 @@ def test_index_html_served() -> None:
     r = client.get("/")
     assert r.status_code == 200
     assert "constellation" in r.text.lower()
+
+
+def test_state_master_includes_backend_and_flux() -> None:
+    client, _ = _make_client()
+    m = client.get("/api/state").json()["master"]
+    assert m["backend"] == "multiband"
+    assert m["band_flux"] == {"bass": 2.0, "mid": 1.0, "high": 0.5}
+
+
+def test_network_mode_endpoint(monkeypatch: pytest.MonkeyPatch) -> None:
+    from constellation import netmode
+
+    monkeypatch.setattr(netmode, "current_mode", lambda: "wifi")
+    monkeypatch.setattr(netmode, "scripts_available", lambda: True)
+    client, _ = _make_client()
+    r = client.get("/api/network/mode")
+    assert r.status_code == 200
+    assert r.json() == {"available": True, "mode": "wifi"}
+
+
+def test_network_ap_endpoint(monkeypatch: pytest.MonkeyPatch) -> None:
+    from constellation import netmode
+
+    monkeypatch.setattr(netmode, "switch_to_ap", lambda: (True, "AP up"))
+    monkeypatch.setattr(netmode, "current_mode", lambda: "ap")
+    client, _ = _make_client()
+    r = client.post("/api/network/ap")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is True
+    assert body["mode"] == "ap"
+    assert "AP up" in body["output"]
+
+
+def test_network_wifi_endpoint(monkeypatch: pytest.MonkeyPatch) -> None:
+    from constellation import netmode
+
+    monkeypatch.setattr(netmode, "switch_to_wifi", lambda: (False, "nmcli error"))
+    monkeypatch.setattr(netmode, "current_mode", lambda: "unknown")
+    client, _ = _make_client()
+    r = client.post("/api/network/wifi")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is False
+    assert "nmcli error" in body["output"]

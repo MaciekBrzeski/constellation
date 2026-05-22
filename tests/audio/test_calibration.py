@@ -8,8 +8,11 @@ from constellation.audio.calibration import (
     CalibrationReport,
     analyse,
     build_report,
+    format_baseline_summary,
     format_summary,
+    measure_baseline,
     suggest,
+    suggest_from_baseline,
 )
 from constellation.config import AudioConfig
 
@@ -95,6 +98,44 @@ def test_suggest_noise_gate_from_p10() -> None:
     cfg = AudioConfig()
     out = suggest(_report(rms_p10=0.05), cfg)
     assert out["noise_gate"] == max(0.001, 0.05 * 1.5)
+
+
+def test_suggest_skips_noise_gate_when_baseline_present() -> None:
+    """A room-tone pass owns the gate; the music pass must not touch it."""
+    cfg = AudioConfig()
+    out = suggest(_report(rms_p10=0.05), cfg, have_baseline=True)
+    assert "noise_gate" not in out
+
+
+def test_measure_baseline_summarises_room_tone() -> None:
+    cfg = AudioConfig()
+    # 30 blocks of steady quiet room tone at RMS ~0.01.
+    audio = np.full(30 * _BLOCK, 0.01, dtype=np.float32)
+    report = measure_baseline(audio, _SR, cfg)
+    assert report.blocks == 30
+    assert report.rms_max >= report.rms_p50 >= report.rms_min
+    assert abs(report.rms_p50 - 0.01) < 1e-4
+
+
+def test_suggest_from_baseline_sets_gate_above_room_noise() -> None:
+    """noise_gate must clear the loudest background block; floor tracks p50."""
+    cfg = AudioConfig()
+    audio = np.full(30 * _BLOCK, 0.01, dtype=np.float32)
+    report = measure_baseline(audio, _SR, cfg)
+    out = suggest_from_baseline(report)
+    assert out["noise_gate"] > report.rms_max
+    assert out["min_noise_floor"] > 0.0
+    assert set(out) == {"noise_gate", "min_noise_floor"}
+
+
+def test_format_baseline_summary_is_readable() -> None:
+    cfg = AudioConfig()
+    audio = np.full(30 * _BLOCK, 0.01, dtype=np.float32)
+    report = measure_baseline(audio, _SR, cfg)
+    text = format_baseline_summary(report, cfg, suggest_from_baseline(report))
+    assert "Background noise" in text
+    assert "noise_gate" in text
+    assert "min_noise_floor" in text
 
 
 def test_format_summary_is_readable() -> None:

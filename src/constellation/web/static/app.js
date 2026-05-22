@@ -24,15 +24,25 @@ function flashBeat() {
   beatTimer = setTimeout(() => el.classList.remove("active"), 120);
 }
 
+// Decaying per-band peak so the flux meters auto-range.
+const fluxPeak = { bass: 1e-6, mid: 1e-6, high: 1e-6 };
+
+function renderFlux(flux) {
+  for (const band of ["bass", "mid", "high"]) {
+    const val = flux[band] || 0;
+    const peak = Math.max(fluxPeak[band] * 0.99, val, 1e-6);
+    fluxPeak[band] = peak;
+    $("flux-" + band).style.width = Math.min(100, (val / peak) * 100) + "%";
+  }
+}
+
 function renderMaster(m) {
   setTier(m.tier);
   $("bpm").textContent = m.bpm > 0 ? m.bpm.toFixed(1) : "—";
   $("strength").textContent = m.last_beat_strength.toFixed(2);
   $("floor").textContent = m.noise_floor.toFixed(4);
-  const aubio = $("aubio");
-  aubio.textContent = m.aubio_active ? "active" : "off";
-  aubio.classList.toggle("online", m.aubio_active);
-  aubio.classList.toggle("offline", !m.aubio_active);
+  $("backend").textContent = m.backend || "—";
+  renderFlux(m.band_flux || {});
 
   if (m.last_beat_audio_ms !== lastBeatTs) {
     lastBeatTs = m.last_beat_audio_ms;
@@ -143,6 +153,57 @@ sens.addEventListener("input", () => {
     sendCmd("/api/master/sensitivity", parseFloat(sens.value));
   }, 100);
 });
+
+// --- Network (AP / Wi-Fi) mode ---------------------------------------------
+function applyNetMode(mode, available) {
+  const card = $("network-card");
+  if (!available) {
+    card.hidden = true;
+    return;
+  }
+  card.hidden = false;
+  const el = $("net-mode");
+  el.textContent = mode;
+  el.classList.toggle("online", mode === "ap" || mode === "wifi");
+  el.classList.toggle("offline", mode === "unknown");
+}
+
+async function refreshNetMode() {
+  try {
+    const r = await fetch("/api/network/mode");
+    const d = await r.json();
+    applyNetMode(d.mode, d.available);
+  } catch (e) {
+    console.warn("net mode fetch failed", e);
+  }
+}
+
+async function netSwitch(target) {
+  const ap = $("net-ap");
+  const wifi = $("net-wifi");
+  const out = $("net-output");
+  ap.disabled = true;
+  wifi.disabled = true;
+  out.textContent = `switching to ${target.toUpperCase()}…`;
+  try {
+    const r = await fetch(`/api/network/${target}`, { method: "POST" });
+    const d = await r.json();
+    out.textContent = `[${d.ok ? "OK" : "FAILED"}]\n${d.output || ""}`;
+    applyNetMode(d.mode, true);
+  } catch (e) {
+    out.textContent =
+      "request failed — the brain may have switched networks and dropped " +
+      "this connection.";
+  } finally {
+    ap.disabled = false;
+    wifi.disabled = false;
+  }
+}
+
+$("net-ap").addEventListener("click", () => netSwitch("ap"));
+$("net-wifi").addEventListener("click", () => netSwitch("wifi"));
+refreshNetMode();
+setInterval(refreshNetMode, 5000);
 
 // WebSocket loop with auto-reconnect.
 function connect() {

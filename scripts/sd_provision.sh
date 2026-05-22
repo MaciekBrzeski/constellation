@@ -9,6 +9,8 @@
 #   - installs the bootstrap shell script to /usr/local/bin/
 #   - creates Wants symlinks under /etc/systemd/system/multi-user.target.wants/
 #   - masks userconfig.service (Pi OS first-boot wizard) so headless boot works
+#   - gives the user a real login shell (Pi OS ships it as nologin)
+#   - grants the user passwordless sudo (the masked wizard would have)
 #   - drops a Wi-Fi NetworkManager profile (worker/standalone only — they join
 #     the brain's access point; the brain hosts its own AP, see scripts/switch/)
 #   - adds the pi user to audio,video,render,input,tty groups
@@ -24,7 +26,9 @@
 #       [--master HOST:PORT]       # for worker; default 0.0.0.0:49500
 #       [--ssh-pubkey ~/.ssh/id_ed25519.pub] \
 #       [--bundle dist/constellation-pi.tar.gz] \
-#       [--user pi]
+#       [--user pi] \
+#       [--wifi-country PL]        # WLAN regulatory domain (default: PL)
+#       [--hostname NAME]          # default: constellation-<animal>/-brain
 #
 # Roles:
 #   standalone (default): mic + display on one Pi, current behavior.
@@ -52,18 +56,22 @@ SSH_PUBKEY=""
 ROLE="standalone"
 ANIMAL=""
 MASTER="0.0.0.0:49500"
+WIFI_COUNTRY="PL"
+PI_HOSTNAME=""
 while [[ $# -gt 0 ]]; do
     case $1 in
-        --rootfs)      ROOTFS=$2;     shift 2 ;;
-        --boot)        BOOT=$2;       shift 2 ;;
-        --ssid)        SSID=$2;       shift 2 ;;
-        --psk)         PSK=$2;        shift 2 ;;
-        --bundle)      BUNDLE=$2;     shift 2 ;;
-        --user)        PI_USER=$2;    shift 2 ;;
-        --ssh-pubkey)  SSH_PUBKEY=$2; shift 2 ;;
-        --role)        ROLE=$2;       shift 2 ;;
-        --animal)      ANIMAL=$2;     shift 2 ;;
-        --master)      MASTER=$2;     shift 2 ;;
+        --rootfs)        ROOTFS=$2;       shift 2 ;;
+        --boot)          BOOT=$2;         shift 2 ;;
+        --ssid)          SSID=$2;         shift 2 ;;
+        --psk)           PSK=$2;          shift 2 ;;
+        --bundle)        BUNDLE=$2;       shift 2 ;;
+        --user)          PI_USER=$2;      shift 2 ;;
+        --ssh-pubkey)    SSH_PUBKEY=$2;   shift 2 ;;
+        --role)          ROLE=$2;         shift 2 ;;
+        --animal)        ANIMAL=$2;       shift 2 ;;
+        --master)        MASTER=$2;       shift 2 ;;
+        --wifi-country)  WIFI_COUNTRY=$2; shift 2 ;;
+        --hostname)      PI_HOSTNAME=$2;  shift 2 ;;
         *) die "unknown arg: $1" ;;
     esac
 done
@@ -74,6 +82,17 @@ case $ROLE in
 esac
 if [[ $ROLE == "worker" && -z $ANIMAL ]]; then
     die "--role worker requires --animal NAME"
+fi
+
+# A worker's control-plane worker_id is its hostname, so every Pi needs a
+# unique one or they collide in the master's registry. Derive a sensible
+# default when --hostname wasn't given.
+if [[ -z $PI_HOSTNAME ]]; then
+    case $ROLE in
+        worker) PI_HOSTNAME="constellation-${ANIMAL//_/-}" ;;
+        brain)  PI_HOSTNAME="constellation-brain" ;;
+        *)      PI_HOSTNAME="constellation" ;;
+    esac
 fi
 
 [[ $EUID -eq 0 ]] || die "must run as root (use sudo)"
@@ -180,6 +199,34 @@ esac
 log "masking userconfig.service (Pi OS first-boot wizard)"
 ln -sfn /dev/null "$ROOTFS/etc/systemd/system/userconfig.service"
 
+# ----- give the user a usable login shell
+# Pi OS ships the default user with a /usr/sbin/nologin shell, expecting the
+# first-boot wizard (just masked above) to finish account setup. Without a
+# real shell, SSH key auth succeeds but the session dies with
+# "This account is currently not available". Set one ourselves.
+log "setting $PI_USER login shell to /bin/bash"
+sed -i "/^$PI_USER:/ s#:[^:]*\$#:/bin/bash#" "$ROOTFS/etc/passwd"
+
+# ----- passwordless sudo for the headless user
+# The masked first-boot wizard would normally grant the default user sudo.
+# Without it, SSH key login works but `sudo` prompts for a password that was
+# never set — leaving the headless Pi unmanageable. Drop a NOPASSWD rule.
+log "granting $PI_USER passwordless sudo"
+echo "$PI_USER ALL=(ALL) NOPASSWD: ALL" \
+    > "$ROOTFS/etc/sudoers.d/010-constellation-nopasswd"
+chmod 0440 "$ROOTFS/etc/sudoers.d/010-constellation-nopasswd"
+
+# ----- set a unique hostname
+# The control-plane worker_id is the hostname; distinct hostnames keep
+# multi-Pi installs from colliding in the master's worker registry.
+log "setting hostname to $PI_HOSTNAME"
+echo "$PI_HOSTNAME" > "$ROOTFS/etc/hostname"
+if grep -qE '^127\.0\.1\.1' "$ROOTFS/etc/hosts"; then
+    sed -i -E "s/^127\.0\.1\.1.*/127.0.1.1\t$PI_HOSTNAME/" "$ROOTFS/etc/hosts"
+else
+    printf '127.0.1.1\t%s\n' "$PI_HOSTNAME" >> "$ROOTFS/etc/hosts"
+fi
+
 # ----- Wi-Fi NetworkManager profile
 # Workers + standalone join the brain's Wi-Fi — typically the Switch OLED
 # access point (scripts/switch/setup_ap.sh), or any router. The brain hosts
@@ -220,6 +267,42 @@ method=auto
 EOF
 chmod 600 "$NM_FILE"
 chown 0:0 "$NM_FILE"
+fi
+
+# ----- enable the Wi-Fi radio
+# A raw-dd'd Pi OS image (unlike one written by Pi Imager) boots with Wi-Fi
+# fully disabled: an rfkill soft-block, NetworkManager WirelessEnabled=false,
+# and no regulatory country — the Broadcom radio can't pick channels without
+# one. Fix all three so the card joins Wi-Fi (or hosts its AP) on first boot.
+log "enabling Wi-Fi radio (regulatory country=$WIFI_COUNTRY)"
+
+# 1. Regulatory domain — applied when the cfg80211 module loads.
+mkdir -p "$ROOTFS/etc/modprobe.d"
+echo "options cfg80211 ieee80211_regdom=$WIFI_COUNTRY" \
+    > "$ROOTFS/etc/modprobe.d/cfg80211.conf"
+
+# 2. NetworkManager: make sure wireless is enabled.
+NM_STATE="$ROOTFS/var/lib/NetworkManager/NetworkManager.state"
+mkdir -p "$(dirname "$NM_STATE")"
+if [[ -f $NM_STATE ]] && grep -q '^WirelessEnabled=' "$NM_STATE"; then
+    sed -i 's/^WirelessEnabled=.*/WirelessEnabled=true/' "$NM_STATE"
+else
+    printf '[main]\nNetworkingEnabled=true\nWirelessEnabled=true\nWWANEnabled=true\n' \
+        > "$NM_STATE"
+fi
+
+# 3. rfkill: clear any saved soft-block on the wlan device. systemd-rfkill
+#    restores these on boot; a fresh image may carry none yet, so pre-seed the
+#    Pi Zero 2 W / Pi 3 wlan device name as a fallback.
+RFKILL_DIR="$ROOTFS/var/lib/systemd/rfkill"
+mkdir -p "$RFKILL_DIR"
+shopt -s nullglob
+wlan_states=("$RFKILL_DIR"/*:wlan)
+shopt -u nullglob
+if [[ ${#wlan_states[@]} -gt 0 ]]; then
+    for f in "${wlan_states[@]}"; do echo 0 > "$f"; done
+else
+    echo 0 > "$RFKILL_DIR/platform-3f300000.mmcnr:wlan"
 fi
 
 # ----- enable SSH (Pi OS firstboot trigger + systemd wants symlink belt-and-braces)
@@ -288,8 +371,12 @@ if [[ $ROLE == "brain" ]]; then
 else
     echo "  wifi:        $NM_FILE (mode 600)"
 fi
+echo "  wifi-radio:  enabled (rfkill cleared, NM wireless on, regdom=$WIFI_COUNTRY)"
 echo "  user:        $PI_USER added to audio,video,render,input,tty"
 echo "  wizard:      userconfig.service masked"
+echo "  shell:       $PI_USER login shell set to /bin/bash"
+echo "  sudo:        $PI_USER granted passwordless sudo"
+echo "  hostname:    $PI_HOSTNAME"
 if [[ -n $SSH_PUBKEY ]]; then
     echo "  ssh:         enabled, pubkey installed for $PI_USER"
 else

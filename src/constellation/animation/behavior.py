@@ -17,6 +17,10 @@ TIER_ACTIONS: dict[str, tuple[str, ...]] = {
     "high": ("run", "jump"),
 }
 
+# A strong kick escalates one tier above the sustained energy tier — so the
+# deer steps idle → walk → run, never snapping straight from idle to jump.
+_ESCALATE: dict[str, str] = {"low": "medium", "medium": "high", "high": "high"}
+
 
 class AudioReactiveBehavior:
     """Drive animal action selection from the detector's energy tier.
@@ -104,8 +108,13 @@ class AudioReactiveBehavior:
                 already_locked = now < self._strong_until
                 self._strong_until = now + self._strong_hold_sec
                 if not already_locked:
-                    self._current_tier = "high"
-                    self._pick_tier_action("high")
+                    # Escalate ONE tier above the sustained energy tier, not
+                    # straight to high — calm music with kicks walks, only
+                    # already-energetic music jumps. Keeps the deer passing
+                    # through medium instead of snapping idle↔jump.
+                    escalated = _ESCALATE[self._beat_detector.energy_tier]
+                    self._current_tier = escalated
+                    self._pick_tier_action(escalated)
                     self._schedule_rotation()
                 return
 
@@ -113,8 +122,8 @@ class AudioReactiveBehavior:
         # Upward moves (tier → high) are rare during lockout and harmless.
         if now < self._strong_until and tier != "high":
             if now >= self._next_rotate_time:
-                # Rotate within the high pool while held.
-                self._pick_tier_action("high")
+                # Rotate within the held (escalated) tier's pool.
+                self._pick_tier_action(self._current_tier or "high")
                 self._schedule_rotation()
             return
 

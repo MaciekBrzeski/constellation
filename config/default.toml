@@ -9,8 +9,8 @@ title = "Constellation"
 bg_color = [0, 0, 0]
 
 [animation]
-target_fps = 12
-idle_fps = 4
+target_fps = 6
+idle_fps = 2
 default_action = "idle"
 animals = ["deer_male", "deer_female", "sample"]
 action_rotate_min_sec = 8.0

@@ -26,3 +26,6 @@ tmp/
 
 # Local Claude state (keep CLAUDE.md tracked)
 .claude/settings.local.json
+
+# Offline Pi bundle inputs — 100+ MB of .deb binaries, regenerable from apt
+offline/debs/

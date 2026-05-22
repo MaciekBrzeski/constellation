@@ -1,10 +1,11 @@
 """CLI entry point for the native desktop control panel.
 
-Runs the brain — local-mic ``BeatDetector`` + UDP ``BeatBroadcaster`` +
-worker ``ControlChannel`` — behind a native Tkinter window
-(``constellation.desktop.app``). The audio + networking layers are identical
-to ``constellation-master``; only the front end differs (native window
-instead of the FastAPI web dashboard).
+The brain — local-mic ``BeatDetector`` + UDP ``BeatBroadcaster`` — runs in a
+**child process** (:class:`~constellation.control.brain.BrainServer`), driven
+over localhost UDP. PortAudio's audio threads crash intermittently when sharing
+a process with Tk/X11 on the L4T/Tegra box, so the Tkinter panel keeps only the
+GUI and the (socket-only) worker ``ControlChannel``; all audio lives in the
+child. The headless ``constellation-master`` runs the same brain in-process.
 """
 
 from __future__ import annotations
@@ -34,22 +35,6 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _resolve_device(name: str | None) -> int | None:
-    """Resolve a saved device *name* to a PortAudio index.
-
-    Indices are unstable across reboot / re-plug, so config stores the name.
-    Returns ``None`` (system default) when the device isn't present.
-    """
-    if not name:
-        return None
-    from constellation.audio.beat import list_input_devices
-
-    for idx, dev_name in list_input_devices():
-        if dev_name == name:
-            return idx
-    return None
-
-
 def main(argv: list[str] | None = None) -> None:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -65,64 +50,27 @@ def main(argv: list[str] | None = None) -> None:
         )
         sys.exit(1)
 
-    from constellation.audio.beat import BeatDetector
-    from constellation.audio.network import BeatBroadcaster
+    from constellation.control.brain import BrainClient
     from constellation.control.master import ControlChannel
 
-    audio_cfg = config.audio
     net_cfg = config.network
     host = args.host if args.host is not None else net_cfg.broadcast_host
     port = args.port if args.port is not None else net_cfg.port
 
-    detector = BeatDetector(
-        sensitivity=audio_cfg.sensitivity,
-        cooldown_ms=audio_cfg.cooldown_ms,
-        history_size=audio_cfg.history_size,
-        sample_rate=audio_cfg.sample_rate,
-        block_size=audio_cfg.block_size,
-        noise_gate=audio_cfg.noise_gate,
-        energy_window_size=audio_cfg.energy_window_size,
-        low_intensity_ratio=audio_cfg.low_intensity_ratio,
-        high_intensity_ratio=audio_cfg.high_intensity_ratio,
-        tempo_history_size=audio_cfg.tempo_history_size,
-        min_noise_floor=audio_cfg.min_noise_floor,
-        use_aubio=audio_cfg.use_aubio,
-        device=_resolve_device(audio_cfg.device),
-        backend=audio_cfg.backend,
-        fft_size=audio_cfg.fft_size,
-        flux_history_size=audio_cfg.flux_history_size,
-        bass_sensitivity=audio_cfg.bass_sensitivity,
-        mid_sensitivity=audio_cfg.mid_sensitivity,
-        high_sensitivity=audio_cfg.high_sensitivity,
-        bass_max_hz=audio_cfg.bass_max_hz,
-        high_min_hz=audio_cfg.high_min_hz,
-        tempo_min_bpm=audio_cfg.tempo_min_bpm,
-        tempo_max_bpm=audio_cfg.tempo_max_bpm,
-    )
-
-    audio_ok = True
-    try:
-        detector.start()
-    except RuntimeError as exc:
-        # No mic / no libportaudio2 — still launch the GUI so the user can
-        # recover from the Microphone tab once the device is available.
-        print(f"[control] audio unavailable: {exc}", file=sys.stderr)
-        audio_ok = False
-
-    broadcaster = BeatBroadcaster(detector, host=host, port=port)
-    broadcaster.start()
+    # Audio runs out-of-process; the panel only talks UDP to it.
+    brain = BrainClient(config, args.config, host=host, port=port)
+    brain.start()
     control = ControlChannel()
     control.start()
 
-    print(f"[control] broadcasting beats to {host}:{port}")
+    print(f"[control] brain child spawned, broadcasting beats to {host}:{port}")
     print("[control] control plane listening for heartbeats on port 49501")
 
     try:
-        run_gui(detector, broadcaster, control, config, audio_ok)
+        run_gui(brain, control, config)
     finally:
-        broadcaster.stop()
         control.stop()
-        detector.stop()  # idempotent — safe whether or not a stream is open
+        brain.stop()
         print("[control] stopped")
 
 

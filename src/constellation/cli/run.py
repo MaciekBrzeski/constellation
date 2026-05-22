@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 import socket
 import sys
-import time
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
@@ -256,37 +255,30 @@ def main(argv: list[str] | None = None) -> None:
         # Advance sprite animation
         dt = clock.tick()
         if remote_sync:
-            # Worker mode: the frame index is the brain's authoritative beat
-            # counter, pre-rolled so the flip lands on the beat. Drift- and
-            # packet-loss-proof — a missed packet self-heals on the next one.
+            # Worker mode: the brain's beats drive the pulse and (via the
+            # audio behavior) action changes. Frames advance time-based so
+            # each action — idle, walk, a jump — plays out smoothly to
+            # completion instead of freezing one frame per beat.
             # remote_sync ⇒ beat_detector is a BeatReceiver (see setup above).
             receiver = cast("BeatReceiver", beat_detector)
-            frame_idx = receiver.consume_frame_index()
-            if frame_idx is not None:
-                controller.advance_to_beat(frame_idx)
+            if (
+                receiver.consume_frame_index() is not None
+                and receiver.energy_tier != "low"
+            ):
+                # Pulse on beats — but stay calm at idle (low) tier.
                 beat_pulse = 1.0
-                if args.debug_sync:
-                    print(
-                        f"[sync] beat_count={receiver.beat_count} "
-                        f"frame={controller._frame_index} "
-                        f"offset_ms={receiver.clock_offset_ms:.1f}",
-                        flush=True,
-                    )
-            elif time.monotonic() - receiver.last_beat_time > 2.0:
-                # No packets from the brain — free-run the idle animation so
-                # the deer isn't frozen. While the brain is up but the room
-                # is quiet, hold on the scheduler index instead, keeping the
-                # two workers phase-locked.
-                sprite_accumulator += dt
-                while sprite_accumulator >= idle_tick_interval:
-                    sprite_accumulator -= idle_tick_interval
-                    controller.advance_frame()
+            sprite_accumulator += dt
+            while sprite_accumulator >= sprite_tick_interval:
+                sprite_accumulator -= sprite_tick_interval
+                controller.advance_frame()
         elif beat_detector is not None:
             if beat_detector.beat_event.is_set():
                 # Beat-driven: advance frame on each detected beat
                 beat_detector.beat_event.clear()
                 controller.advance_frame()
-                beat_pulse = 1.0
+                # Flash only while music is playing, not on idle-tier beats.
+                if beat_detector.energy_tier != "low":
+                    beat_pulse = 1.0
             elif audio_behavior is not None and not audio_behavior.active:
                 # Silent: fall back to time-based frame advancement at the
                 # slower idle rate so the resting animation reads as calm.

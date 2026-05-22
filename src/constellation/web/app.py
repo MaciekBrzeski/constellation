@@ -18,6 +18,7 @@ from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from constellation import netmode
 from constellation.control.master import ControlChannel
 
 
@@ -56,7 +57,11 @@ def _state_snapshot(detector: Any, channel: ControlChannel) -> dict[str, Any]:
             "sensitivity": float(getattr(detector, "sensitivity", 0.0)),
             "noise_floor": float(getattr(detector, "noise_floor", 0.0)),
             "tier_intensity": float(getattr(detector, "tier_intensity", 0.0)),
-            "aubio_active": bool(getattr(detector, "aubio_active", False)),
+            "backend": str(getattr(detector, "backend_name", "rms")),
+            "band_flux": {
+                b: float(v)
+                for b, v in (getattr(detector, "band_flux", {}) or {}).items()
+            },
         },
         "workers": workers,
         "ts": now,
@@ -96,6 +101,25 @@ def create_app(detector: Any, channel: ControlChannel) -> FastAPI:
         if not ok:
             raise HTTPException(404, f"worker {worker_id} unknown")
         return {"ok": True}
+
+    @app.get("/api/network/mode")
+    def network_mode() -> dict[str, Any]:
+        return {
+            "available": netmode.scripts_available(),
+            "mode": netmode.current_mode(),
+        }
+
+    @app.post("/api/network/ap")
+    def network_ap() -> dict[str, Any]:
+        # Blocking subprocess — FastAPI runs sync routes in a threadpool, so
+        # the WebSocket loop keeps streaming while this runs.
+        ok, output = netmode.switch_to_ap()
+        return {"ok": ok, "output": output, "mode": netmode.current_mode()}
+
+    @app.post("/api/network/wifi")
+    def network_wifi() -> dict[str, Any]:
+        ok, output = netmode.switch_to_wifi()
+        return {"ok": ok, "output": output, "mode": netmode.current_mode()}
 
     @app.websocket("/ws")
     async def ws(websocket: WebSocket) -> None:

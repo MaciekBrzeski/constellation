@@ -100,6 +100,9 @@ class BeatDetector:
         self._tempo_max_bpm = tempo_max_bpm
         self._onset_backend: MultibandSpectralFluxDetector | None = None
         self._backend_name = "rms"
+        # Most recent per-band spectral flux from the multiband backend.
+        # Stays at zeros for the aubio / rms backends (no band split).
+        self._band_flux: dict[str, float] = {"bass": 0.0, "mid": 0.0, "high": 0.0}
 
         self._beat_event = threading.Event()
         self._energy_history: collections.deque[float] = collections.deque(
@@ -179,6 +182,15 @@ class BeatDetector:
         return self._noise_floor
 
     @property
+    def min_noise_floor(self) -> float:
+        """Lower clamp for the adaptive noise floor."""
+        return self._min_noise_floor
+
+    @min_noise_floor.setter
+    def min_noise_floor(self, value: float) -> None:
+        self._min_noise_floor = max(0.0, float(value))
+
+    @property
     def tier_energy(self) -> float:
         """Fast EMA of RMS used for tier classification."""
         return self._tier_energy
@@ -237,6 +249,15 @@ class BeatDetector:
         return self._backend_name
 
     @property
+    def band_flux(self) -> dict[str, float]:
+        """Latest bass/mid/high spectral flux from the multiband backend.
+
+        A fresh copy each call (snapshot for cross-thread GUI reads). All
+        zeros for the ``aubio`` and ``rms`` backends, which have no band split.
+        """
+        return dict(self._band_flux)
+
+    @property
     def low_intensity_ratio(self) -> float:
         """Intensity below this classifies the energy tier as ``'low'``."""
         return self._low_intensity_ratio
@@ -283,6 +304,8 @@ class BeatDetector:
                 ext_beat = result.beat
                 if ext_beat:
                     ext_bpm = result.bpm
+                if result.band_flux:
+                    self._band_flux = result.band_flux
             except Exception:
                 ext_beat = False
                 ext_bpm = 0.0
@@ -409,6 +432,7 @@ class BeatDetector:
         """
         self._aubio_tempo = None
         self._onset_backend = None
+        self._band_flux = {"bass": 0.0, "mid": 0.0, "high": 0.0}
 
         choice = self._backend_choice
         if choice == "auto":

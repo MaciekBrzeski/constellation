@@ -33,8 +33,23 @@
         <span id="floor" class="value small">—</span>
       </div>
       <div class="row">
-        <span class="label">aubio</span>
-        <span id="aubio" class="badge">?</span>
+        <span class="label">onset backend</span>
+        <span id="backend" class="value small">—</span>
+      </div>
+
+      <div class="flux">
+        <div class="flux-row">
+          <span class="flux-label">bass</span>
+          <span class="meter"><span id="flux-bass" class="meter-fill"></span></span>
+        </div>
+        <div class="flux-row">
+          <span class="flux-label">mid</span>
+          <span class="meter"><span id="flux-mid" class="meter-fill"></span></span>
+        </div>
+        <div class="flux-row">
+          <span class="flux-label">high</span>
+          <span class="meter"><span id="flux-high" class="meter-fill"></span></span>
+        </div>
       </div>
 
       <div class="slider">
@@ -48,6 +63,23 @@
       <div id="worker-list" class="worker-list">
         <p class="empty">waiting for heartbeats…</p>
       </div>
+    </section>
+
+    <section id="network-card" class="card network" hidden>
+      <h2>network</h2>
+      <div class="row">
+        <span class="label">wi-fi mode</span>
+        <span id="net-mode" class="badge">?</span>
+      </div>
+      <div class="net-buttons">
+        <button id="net-ap" type="button">switch to AP</button>
+        <button id="net-wifi" type="button">switch to Wi-Fi</button>
+      </div>
+      <p class="net-warn">
+        Switching to AP cuts the brain's internet. If you opened this
+        dashboard over the home network, it will disconnect.
+      </p>
+      <pre id="net-output" class="net-output"></pre>
     </section>
   </main>
 

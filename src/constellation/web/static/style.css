@@ -149,3 +149,65 @@ main {
   padding: 6px 8px;
   font-size: 13px;
 }
+
+/* --- multiband spectral-flux meters --- */
+.flux { margin-top: 12px; display: grid; gap: 6px; }
+.flux-row { display: flex; align-items: center; gap: 8px; }
+.flux-label {
+  width: 34px;
+  font-size: 11px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.meter {
+  flex: 1;
+  height: 8px;
+  background: rgba(255,255,255,0.05);
+  border-radius: 999px;
+  overflow: hidden;
+}
+.meter-fill {
+  display: block;
+  height: 100%;
+  width: 0;
+  background: linear-gradient(90deg, var(--accent), var(--beat));
+  border-radius: 999px;
+  transition: width 90ms linear;
+}
+
+/* --- network (AP / Wi-Fi) card --- */
+.net-buttons { display: flex; gap: 8px; margin-top: 12px; }
+.net-buttons button {
+  flex: 1;
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid #2a2f3d;
+  border-radius: 6px;
+  padding: 8px 10px;
+  font-size: 13px;
+  cursor: pointer;
+}
+.net-buttons button:hover:not(:disabled) { border-color: var(--accent); }
+.net-buttons button:disabled { opacity: 0.5; cursor: default; }
+
+.net-warn {
+  margin: 10px 0 0;
+  font-size: 11px;
+  color: var(--tier-medium);
+  line-height: 1.4;
+}
+.net-output {
+  margin: 10px 0 0;
+  max-height: 160px;
+  overflow: auto;
+  background: var(--bg);
+  border: 1px solid #20232c;
+  border-radius: 6px;
+  padding: 8px 10px;
+  font-size: 11px;
+  color: var(--muted);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.net-output:empty { display: none; }
